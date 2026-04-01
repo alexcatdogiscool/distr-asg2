@@ -5,11 +5,7 @@ use tokio::{
 };
 
 use libp2p::{
-    noise,
-    request_response::{self, ProtocolSupport},
-    swarm::{NetworkBehaviour, SwarmEvent},
-    tcp, yamux, Multiaddr, PeerId, StreamProtocol,
-    kad::{store::MemoryStore, Behaviour, Config, Event, Mode, QueryResult},
+    Multiaddr, PeerId, StreamProtocol, identity::Keypair, kad::{Behaviour as KadBehaviour, Config as KadConfig, Event as KadEvent, Mode, QueryResult, store::MemoryStore}, noise, request_response::{self, ProtocolSupport}, swarm::{NetworkBehaviour, SwarmEvent}, tcp, yamux
 };
 
 use clap::Parser;
@@ -32,8 +28,9 @@ struct Cli {
 }
 
 #[derive(NetworkBehaviour)]
-struct ReqResBehaviour {
+struct MyBehaviour {
     request_response: request_response::cbor::Behaviour<String, String>,
+    kademlia: KadBehaviour<MemoryStore>,
 }
 
 
@@ -59,6 +56,14 @@ async fn main() ->Result<(), Box<dyn Error>> {
         print!("finished loading");
     }
 
+    // set up peer_id from key
+    let secret_bytes = signing_key.to_bytes();
+    let libp2p_keypair = Keypair::ed25519_from_bytes(secret_bytes)
+        .expect("Given key could not be used to make peer_id");
+
+    let local_peer_id = PeerId::from(libp2p_keypair.public());
+    println!("local peer id: {}", local_peer_id.to_string());
+
     // set up the swarm!
     let mut swarm = libp2p::SwarmBuilder::with_new_identity()
         .with_tokio()
@@ -67,25 +72,44 @@ async fn main() ->Result<(), Box<dyn Error>> {
             noise::Config::new,
             yamux::Config::default
         )?
-        .with_behaviour(|_key| ReqResBehaviour{
-            request_response: request_response::cbor::Behaviour::new(
-                [(StreamProtocol::new("/test/v1"),
-                ProtocolSupport::Full,
-            )],
-            request_response::Config::default(),
-            )
+        .with_behaviour(| key| {
+            let peer_id = key.public().to_peer_id();
+
+            let store = MemoryStore::new(peer_id);
+            let mut kad_config = KadConfig::new(StreamProtocol::new("/peerboard/kad/1.0.0"));
+            kad_config.set_query_timeout(Duration::from_secs(30));
+            let mut kademlia = KadBehaviour::with_config(peer_id, store, kad_config);
+
+            MyBehaviour {
+                request_response: request_response::cbor::Behaviour::new(
+                    [(StreamProtocol::new("/bulletin/msg/v1"), ProtocolSupport::Full)],
+                    request_response::Config::default(),
+                ),
+                kademlia,
+            }
         })?
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(1000)))
         .build();
 
     let listen_port = "0".to_string();
-    let multiaddr = format!("/ip4/0.0.0.0/tcp/{listen_port}");
+    let multiaddr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{listen_port}").parse()?;
 
-    swarm.listen_on(multiaddr.parse()?);
+    let _ = swarm.listen_on(multiaddr);
 
-    if let Some(peer) = cli.peer {
-        swarm.dial(peer);
-    }
+    // dial the bootdtrap node vvv
+    // bootstrap multiaddr v
+    let bootstrap_multiaddr: Multiaddr = format!("/ip4/170.64.177.57/tcp/8000/p2p/12D3KooWCvwqT3JUzVQczCvAVFa9EGzNqjHHSMVHVhm3RVyscCNY").parse()?;
+    
+    let bootstrap_peer_id = match bootstrap_multiaddr.iter().last() {
+        Some(libp2p::multiaddr::Protocol::P2p(id)) => id,
+        _ => return Err("bad bootstrap node!".into()),
+    };
+
+    swarm.behaviour_mut().kademlia.add_address(&bootstrap_peer_id, bootstrap_multiaddr.clone());
+    swarm.dial(bootstrap_multiaddr)?;
+    swarm.behaviour_mut().kademlia.bootstrap()?;
+    println!("bootstrapping from bootstrap id");
+
 
     let mut other_peer_id: Option<PeerId> = None;
 
@@ -100,6 +124,9 @@ async fn main() ->Result<(), Box<dyn Error>> {
                 SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                     other_peer_id = Some(peer_id);
                     println!("connection established with: {}", other_peer_id.unwrap().to_string());
+                }
+                SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(e)) => {
+                    println!("kademlia event {e:?}");
                 }
                 _ => println!("unhandled: {:?}", event),
             }
