@@ -1,0 +1,17 @@
+[package]
+name = "asg2"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.50.0", features = ["full"] }
+async-trait = "0.1.89"
+futures = "0.3.32"
+clap = { version="4.6.0", features=["derive"] }
+serde = { version="1.0.228", features=["derive"] }
+ed25519-dalek = { version = "2",features = ["rand_core"]}
+rand = { version = "0.8", features = ["std"]}
+
+[dependencies.libp2p]
+version = "0.56.0"
+features = ["tokio", "noise", "macros", "tcp", "quic", "yamux", "cbor", "request-response", "kad"]
