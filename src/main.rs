@@ -54,6 +54,15 @@ struct MyBehaviour {
     gossipsub: gossipsub::Behaviour,
 }
 
+struct PeerBoardMessage {
+    peer_id: String,
+    topic: String,
+    content: String,
+    timestamp: i64,
+    message_id: String,
+    nickname: String,
+}
+
 
 #[tokio::main]
 async fn main() ->Result<(), Box<dyn Error>> {
@@ -178,8 +187,8 @@ async fn main() ->Result<(), Box<dyn Error>> {
     }
 
     // set up a topic v
-    
-    let topic = gossipsub::IdentTopic::new("peerboard/v1/general");
+    let topic_string = "peerboard/v1/general".to_string();
+    let topic = gossipsub::IdentTopic::new(topic_string.clone());
     swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
 
 
@@ -195,6 +204,18 @@ async fn main() ->Result<(), Box<dyn Error>> {
 
             // simple msg match
             Ok(Some(line)) = stdin.next_line() => {
+                // construct a message based on the input
+
+                let msg = PeerBoardMessage {
+                    peer_id: local_peer_id.to_string(),
+                    topic: topic_string.clone(),
+                    content: line,
+                    timestamp: 0,
+                    message_id: Uuid::new_v4().to_string(),
+                    nickname: "alex".to_string()
+                };
+
+                
                 swarm.behaviour_mut().gossipsub.publish(topic.clone(), line.as_bytes())?;
             }
 
