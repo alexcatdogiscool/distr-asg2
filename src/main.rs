@@ -35,6 +35,7 @@ use uuid::Uuid;
 use prost::Message;
 use bulletin::PeerBoardMessage;
 use rusqlite::{Connection, Result as SqResult};
+use crossterm::event;
 
 
 #[derive(Parser)]
@@ -51,6 +52,9 @@ struct Cli {
 
     #[arg(long)]
     sqldb: String,
+
+    #[arg(long)]
+    debug: bool,// if true, dont do TUI stuff, else, do TUI stuff
 
 }
 
@@ -117,7 +121,7 @@ async fn main() ->Result<(), Box<dyn Error>> {
         (),
     ).expect("failed to create table");
     
-
+    // TUI stuff
 
     // key stuff
 
@@ -132,7 +136,7 @@ async fn main() ->Result<(), Box<dyn Error>> {
     }
     else {
         println!("loading keypair");
-        let bytes = fs::read(cli.ident_key.unwrap()).expect("error reading file.");
+        let bytes = fs::read(cli.ident_key.unwrap()).expect("error reading key file");
         let keypair_bytes: [u8; 64] = bytes[..64].try_into().expect("file contins incorrect data");
         signing_key = SigningKey::from_keypair_bytes(&keypair_bytes)?;
         print!("finished loading");
