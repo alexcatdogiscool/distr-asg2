@@ -1,0 +1,11 @@
+syntax = "proto3";
+package peerboard.v1;
+
+message PeerBoardMessage {
+    string peer_id = 1; // peer_id.to_string() — base58btc multihash
+    string topic = 2; // full topic, e.g. "peerboard/v1/rust"
+    string content = 3; // post body; UTF-8 byte length ≤ 4096
+    int64 timestamp = 4; // Unix timestamp in whole seconds
+    string message_id = 5; // UUIDv4, e.g. "550e8400-e29b-41d4-a716-446655440000"
+    string nickname = 6;
+}

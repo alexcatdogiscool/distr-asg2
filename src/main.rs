@@ -1,7 +1,7 @@
 use tokio::{
     io::{self, stdin, BufReader, AsyncBufReadExt, AsyncReadExt},
     select,
-    fs::File
+    fs::File,
 };
 
 use libp2p::{
@@ -15,7 +15,8 @@ use libp2p::{
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp,
     yamux,
-    gossipsub
+    gossipsub,
+    mdns,
 };
 
 use clap::Parser;
@@ -31,10 +32,13 @@ use std::{error::Error, fs,
     },
     time::Duration};
 use uuid::Uuid;
+use prost::Message;
+use bulletin::PeerBoardMessage;
+use rusqlite::{Connection, Result as SqResult};
 
 
 #[derive(Parser)]
-#[clap(name = "bulitin board!!! :)")]
+#[clap(name = "bulletin board!!!")]
 struct Cli {
     #[arg(long)]
     ident_key: Option<String>,
@@ -45,6 +49,9 @@ struct Cli {
     #[arg(long)]
     port: Option<String>,
 
+    #[arg(long)]
+    sqldb: String,
+
 }
 
 #[derive(NetworkBehaviour)]
@@ -52,22 +59,67 @@ struct MyBehaviour {
     request_response: request_response::cbor::Behaviour<String, String>,
     kademlia: KadBehaviour<MemoryStore>,
     gossipsub: gossipsub::Behaviour,
+    mdns: mdns::tokio::Behaviour,
 }
 
-struct PeerBoardMessage {
-    peer_id: String,
-    topic: String,
-    content: String,
-    timestamp: i64,
-    message_id: String,
-    nickname: String,
+
+
+pub mod bulletin {
+    include!(concat!(env!("OUT_DIR"), "/peerboard.v1.rs"));
 }
 
+fn check_msg(msg: &PeerBoardMessage) -> bool {
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    if (msg.content.as_bytes().len() > 4096) {
+        println!("1");
+        return false;
+    }
+    if (msg.topic[0..13].as_bytes() != "peerboard/v1/".as_bytes()) {
+        println!("2");
+        return false;
+    }
+    if (now - msg.timestamp > 300) {
+        println!("3");
+        return false;
+    }
+    if (msg.nickname.as_bytes().len() > 32) {
+        println!("4");
+        return false;
+    }
+    return true;
+}
 
 #[tokio::main]
 async fn main() ->Result<(), Box<dyn Error>> {
+
+    // cli input
     
     let cli = Cli::parse();
+
+    // sql init
+
+    let conn = Connection::open(cli.sqldb).expect("couldnt open table");
+    
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS msgs (
+            peer_id     TEXT NOT NULL,
+            topic       TEXT NOT NULL,
+            content     TEXT,
+            timestamp   INTEGER NOT NULL,
+            message_id  TEXT NOT NULL,
+            nickname    TEXT
+        )",
+        (),
+    ).expect("failed to create table");
+    
+
+
+    // key stuff
 
     let signing_key: SigningKey;
     if cli.ident_key.is_none() {
@@ -102,6 +154,7 @@ async fn main() ->Result<(), Box<dyn Error>> {
             noise::Config::new,
             yamux::Config::default
         )?
+        .with_quic()
         .with_behaviour(| key| {
 
             // set up kademlia
@@ -111,6 +164,11 @@ async fn main() ->Result<(), Box<dyn Error>> {
             let mut kad_config = KadConfig::new(StreamProtocol::new("/peerboard/kad/1.0.0"));
             kad_config.set_query_timeout(Duration::from_secs(30));
             let mut kademlia = KadBehaviour::with_config(peer_id, store, kad_config);
+
+            // set up mdns
+            let mdns = mdns::tokio::Behaviour::new(
+                mdns::Config::default(), key.public().to_peer_id()
+            ).expect("mdns init failed");
 
             // set up gossipsub
             // msg id auth
@@ -139,6 +197,7 @@ async fn main() ->Result<(), Box<dyn Error>> {
                 ),
                 kademlia,
                 gossipsub,
+                mdns,
             }
         })?
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(1000)))
@@ -152,8 +211,12 @@ async fn main() ->Result<(), Box<dyn Error>> {
     };
 
     let multiaddr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{listen_port}").parse()?;
+    let multiaddr_quic: Multiaddr = format!("/ip4/0.0.0.0/udp/{listen_port}/quic-v1").parse()?;
+    
 
     let _ = swarm.listen_on(multiaddr);
+    let _ = swarm.listen_on(multiaddr_quic);
+    
 
     // dial the bootdtrap node vvv
     // bootstrap multiaddr v
@@ -206,17 +269,37 @@ async fn main() ->Result<(), Box<dyn Error>> {
             Ok(Some(line)) = stdin.next_line() => {
                 // construct a message based on the input
 
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64;
+
                 let msg = PeerBoardMessage {
                     peer_id: local_peer_id.to_string(),
                     topic: topic_string.clone(),
                     content: line,
-                    timestamp: 0,
+                    timestamp: now,
                     message_id: Uuid::new_v4().to_string(),
-                    nickname: "alex".to_string()
+                    nickname: "alex".to_string(),
                 };
 
+                // check the message for validity
+                if (check_msg(&msg)) {
+                    let mut buf = Vec::new();
+                    msg.encode(&mut buf).unwrap();
+                    swarm.behaviour_mut().gossipsub.publish(topic.clone(), buf)?;
+                    // add it to the db
+                    conn.execute(
+                        "INSERT INTO msgs (peer_id, topic, content, timestamp, message_id, nickname)
+                        VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    (msg.peer_id, msg.topic, msg.content, msg.timestamp, msg.message_id, msg.nickname),
+                    ).expect("couldnt add msg to the db");
+                }
+                else {
+                    println!("bad message. didnt publish");
+                }
+
                 
-                swarm.behaviour_mut().gossipsub.publish(topic.clone(), line.as_bytes())?;
             }
 
             // swam match
@@ -236,13 +319,49 @@ async fn main() ->Result<(), Box<dyn Error>> {
                 }
                 // gossipsub listen
                 SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
-                    propagation_source: peer_id,
-                    message_id: id,
                     message,
-                    
+                    ..
                     })) => {
-                        println!("got a gossip msg: {:?} with id: {}, from peer: {}",
-                            &message.data, id, peer_id)
+                        match PeerBoardMessage::decode(message.data.as_slice()) {
+                            Ok(msg) => {
+                                // check the message for validity
+                                if (check_msg(&msg)) {
+                                    // chgeck if it exists within the db v
+
+                                    let msg_exists: bool = conn
+                                        .query_row(
+                                            "SELECT COUNT(*) FROM msgs WHERE message_id = ?1",
+                                            [&msg.message_id],
+                                            |row| row.get::<_, i64>(0),
+                                        )
+                                        .unwrap_or(0) > 0;
+
+                                    if msg_exists {
+                                        //duplicate message
+                                        println!("duplicate message recieved");
+                                    }
+                                    else {
+                                        // valid good non duplicate message
+                                        println!("[{}] {}: {}", msg.topic, msg.nickname, msg.content);
+                                        // add it to the db
+                                        conn.execute(
+                                            "INSERT INTO msgs (peer_id, topic, content, timestamp, message_id, nickname)
+                                            VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                                        (msg.peer_id, msg.topic, msg.content, msg.timestamp, msg.message_id, msg.nickname),
+                                        ).expect("couldnt add msg to the db");
+                                    }
+
+                                    
+                                    
+
+                                }
+                                else {
+                                    println!("received a malformed message");
+                                }
+                                
+                            },
+                            Err(e) => println!("failed to decode msg: {e}"),
+                        }
                     }
                 _ => println!("unhandled: {:?}", event),
             }

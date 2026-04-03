@@ -1,0 +1,42 @@
+    Running `target/debug/asg2 --ident-key ident-keypair2.key --port 9999 --sqldb msg_db2`
+loading keypair
+finished loadinglocal peer id: 12D3KooWGKMA97YjCEVcTwpURweCVjBoYaYS1YN5h6veUKmBct8f
+bootstrapping from bootstrap id
+kademlia event RoutingUpdated { peer: PeerId("12D3KooWCvwqT3JUzVQczCvAVFa9EGzNqjHHSMVHVhm3RVyscCNY"), is_new_peer: true, addresses: [/ip4/170.64.177.57/tcp/8000/p2p/12D3KooWCvwqT3JUzVQczCvAVFa9EGzNqjHHSMVHVhm3RVyscCNY], bucket_range: (Distance(28948022309329048855892746252171976963317496166410141009864396001978282409984), Distance(57896044618658097711785492504343953926634992332820282019728792003956564819967)), old_peer: None }
+Listening on addr: /ip4/127.0.0.1/tcp/9999
+Listening on addr: /ip4/192.168.0.191/tcp/9999
+Listening on addr: /ip4/127.0.0.1/udp/9999/quic-v1
+Listening on addr: /ip4/192.168.0.191/udp/9999/quic-v1
+unhandled: Behaviour(MyBehaviourEvent: Discovered([(PeerId("12D3KooWNMg46msQPYSS1rvCQS91zrYjrQYEckL9TxEkbkpMG2g8"), /ip4/192.168.0.191/tcp/8888/p2p/12D3KooWNMg46msQPYSS1rvCQS91zrYjrQYEckL9TxEkbkpMG2g8), (PeerId("12D3KooWNMg46msQPYSS1rvCQS91zrYjrQYEckL9TxEkbkpMG2g8"), /ip4/192.168.0.191/udp/8888/quic-v1/p2p/12D3KooWNMg46msQPYSS1rvCQS91zrYjrQYEckL9TxEkbkpMG2g8)]))
+unhandled: NewExternalAddrOfPeer { peer_id: PeerId("12D3KooWNMg46msQPYSS1rvCQS91zrYjrQYEckL9TxEkbkpMG2g8"), address: /ip4/192.168.0.191/tcp/8888/p2p/12D3KooWNMg46msQPYSS1rvCQS91zrYjrQYEckL9TxEkbkpMG2g8 }
+unhandled: NewExternalAddrOfPeer { peer_id: PeerId("12D3KooWNMg46msQPYSS1rvCQS91zrYjrQYEckL9TxEkbkpMG2g8"), address: /ip4/192.168.0.191/udp/8888/quic-v1/p2p/12D3KooWNMg46msQPYSS1rvCQS91zrYjrQYEckL9TxEkbkpMG2g8 }
+connection established with: 12D3KooWCvwqT3JUzVQczCvAVFa9EGzNqjHHSMVHVhm3RVyscCNY
+unhandled: Dialing { peer_id: Some(PeerId("12D3KooWCx1zehHFojZ371UaGgFZ27GWKbcwjnkJGyaZ3E6vCt95")), connection_id: ConnectionId(3) }
+unhandled: Dialing { peer_id: Some(PeerId("12D3KooWDmquG4YHoZ44kQ53DXqoZQ3ikV5sgWngdFtM4M2BHeGc")), connection_id: ConnectionId(4) }
+unhandled: Dialing { peer_id: Some(PeerId("12D3KooWNMg46msQPYSS1rvCQS91zrYjrQYEckL9TxEkbkpMG2g8")), connection_id: ConnectionId(5) }
+connection established with: 12D3KooWNMg46msQPYSS1rvCQS91zrYjrQYEckL9TxEkbkpMG2g8
+unhandled: Behaviour(MyBehaviourEvent: Subscribed { peer_id: PeerId("12D3KooWNMg46msQPYSS1rvCQS91zrYjrQYEckL9TxEkbkpMG2g8"), topic: TopicHash { hash: "peerboard/v1/general" } })
+unhandled: Dialing { peer_id: Some(PeerId("12D3KooWKobPGGsTgG28qMGPk75hx8aUcaLVbAERDdXCk6nkLZzT")), connection_id: ConnectionId(6) }
+unhandled: Behaviour(MyBehaviourEvent: GossipsubNotSupported { peer_id: PeerId("12D3KooWCvwqT3JUzVQczCvAVFa9EGzNqjHHSMVHVhm3RVyscCNY") })
+hello
+unhandled: OutgoingConnectionError { connection_id: ConnectionId(3), peer_id: Some(PeerId("12D3KooWCx1zehHFojZ371UaGgFZ27GWKbcwjnkJGyaZ3E6vCt95")), error: Transport([(/ip4/132.181.14.95/tcp/52426/p2p/12D3KooWCx1zehHFojZ371UaGgFZ27GWKbcwjnkJGyaZ3E6vCt95, Other(Custom { kind: Other, error: Timeout })), (/ip4/132.181.14.95/tcp/44921/p2p/12D3KooWCx1zehHFojZ371UaGgFZ27GWKbcwjnkJGyaZ3E6vCt95, Other(Custom { kind: Other, error: Timeout }))]) }
+unhandled: Dialing { peer_id: Some(PeerId("12D3KooWMtNaLxNXKr9PJcooKcsDHzVheRpYHAM1RuzSrU3coyrU")), connection_id: ConnectionId(7) }
+unhandled: Dialing { peer_id: Some(PeerId("12D3KooWJkc1MWxhG357zVVWBxxCkWutf1QVbcbFCAbUQhywgX9F")), connection_id: ConnectionId(8) }
+unhandled: OutgoingConnectionError { connection_id: ConnectionId(4), peer_id: Some(PeerId("12D3KooWDmquG4YHoZ44kQ53DXqoZQ3ikV5sgWngdFtM4M2BHeGc")), error: Transport([(/ip4/202.36.179.104/tcp/38150/p2p/12D3KooWDmquG4YHoZ44kQ53DXqoZQ3ikV5sgWngdFtM4M2BHeGc, Other(Custom { kind: Other, error: Timeout }))]) }
+unhandled: OutgoingConnectionError { connection_id: ConnectionId(6), peer_id: Some(PeerId("12D3KooWKobPGGsTgG28qMGPk75hx8aUcaLVbAERDdXCk6nkLZzT")), error: Transport([(/ip4/132.181.16.53/tcp/58328/p2p/12D3KooWKobPGGsTgG28qMGPk75hx8aUcaLVbAERDdXCk6nkLZzT, Other(Custom { kind: Other, error: Timeout })), (/ip4/132.181.16.53/tcp/46537/p2p/12D3KooWKobPGGsTgG28qMGPk75hx8aUcaLVbAERDdXCk6nkLZzT, Other(Custom { kind: Other, error: Timeout }))]) }
+unhandled: Dialing { peer_id: Some(PeerId("12D3KooWJ6b6mUbM4wQfFKsgoz4Uy5FQLJkpDJGFMZNBJhqfbrdV")), connection_id: ConnectionId(9) }
+unhandled: OutgoingConnectionError { connection_id: ConnectionId(7), peer_id: Some(PeerId("12D3KooWMtNaLxNXKr9PJcooKcsDHzVheRpYHAM1RuzSrU3coyrU")), error: Transport([(/ip4/101.53.218.120/tcp/58253/p2p/12D3KooWMtNaLxNXKr9PJcooKcsDHzVheRpYHAM1RuzSrU3coyrU, Other(Custom { kind: Other, error: Timeout }))]) }
+unhandled: Dialing { peer_id: Some(PeerId("12D3KooWKvVdyYVb5ZJQ5TE2ukTWCqx2X3Qrz8WxVgJY9L1ZurzX")), connection_id: ConnectionId(10) }
+unhandled: Dialing { peer_id: Some(PeerId("12D3KooWMAd3sjMgeiEwRyLdJft781dEYyiuznPR7XYdBGBBmVXq")), connection_id: ConnectionId(11) }
+unhandled: OutgoingConnectionError { connection_id: ConnectionId(8), peer_id: Some(PeerId("12D3KooWJkc1MWxhG357zVVWBxxCkWutf1QVbcbFCAbUQhywgX9F")), error: Transport([(/ip4/202.36.179.105/tcp/55560/p2p/12D3KooWJkc1MWxhG357zVVWBxxCkWutf1QVbcbFCAbUQhywgX9F, Other(Custom { kind: Other, error: Timeout }))]) }
+unhandled: OutgoingConnectionError { connection_id: ConnectionId(9), peer_id: Some(PeerId("12D3KooWJ6b6mUbM4wQfFKsgoz4Uy5FQLJkpDJGFMZNBJhqfbrdV")), error: Transport([(/ip4/202.36.179.105/tcp/54124/p2p/12D3KooWJ6b6mUbM4wQfFKsgoz4Uy5FQLJkpDJGFMZNBJhqfbrdV, Other(Custom { kind: Other, error: Timeout }))]) }
+unhandled: Dialing { peer_id: Some(PeerId("12D3KooWFnGMgKJByBoSVrE5nKwU7bVg2AMLJJpazfTarKMtUSHd")), connection_id: ConnectionId(12) }
+kademlia event OutboundQueryProgressed { id: QueryId(0), result: Bootstrap(Err(Timeout { peer: PeerId("12D3KooWGKMA97YjCEVcTwpURweCVjBoYaYS1YN5h6veUKmBct8f"), num_remaining: None })), stats: QueryStats { requests: 11, success: 1, failure: 7, start: Some(Instant { tv_sec: 169928, tv_nsec: 853018774 }), end: Some(Instant { tv_sec: 169959, tv_nsec: 253419931 }) }, step: ProgressStep { count: 1, last: true } }
+unhandled: OutgoingConnectionError { connection_id: ConnectionId(10), peer_id: Some(PeerId("12D3KooWKvVdyYVb5ZJQ5TE2ukTWCqx2X3Qrz8WxVgJY9L1ZurzX")), error: Transport([(/ip4/219.89.62.60/tcp/52446/p2p/12D3KooWKvVdyYVb5ZJQ5TE2ukTWCqx2X3Qrz8WxVgJY9L1ZurzX, Other(Custom { kind: Other, error: Timeout }))]) }
+unhandled: OutgoingConnectionError { connection_id: ConnectionId(11), peer_id: Some(PeerId("12D3KooWMAd3sjMgeiEwRyLdJft781dEYyiuznPR7XYdBGBBmVXq")), error: Transport([(/ip4/132.181.14.95/tcp/60072/p2p/12D3KooWMAd3sjMgeiEwRyLdJft781dEYyiuznPR7XYdBGBBmVXq, Other(Custom { kind: Other, error: Timeout })), (/ip4/132.181.14.95/tcp/35157/p2p/12D3KooWMAd3sjMgeiEwRyLdJft781dEYyiuznPR7XYdBGBBmVXq, Other(Custom { kind: Other, error: Timeout })), (/ip4/132.181.16.53/tcp/36442/p2p/12D3KooWMAd3sjMgeiEwRyLdJft781dEYyiuznPR7XYdBGBBmVXq, Other(Custom { kind: Other, error: Timeout })), (/ip4/132.181.16.53/tcp/40023/p2p/12D3KooWMAd3sjMgeiEwRyLdJft781dEYyiuznPR7XYdBGBBmVXq, Other(Custom { kind: Other, error: Timeout })), (/ip4/132.181.16.53/tcp/36854/p2p/12D3KooWMAd3sjMgeiEwRyLdJft781dEYyiuznPR7XYdBGBBmVXq, Other(Custom { kind: Other, error: Timeout })), (/ip4/132.181.16.53/tcp/41957/p2p/12D3KooWMAd3sjMgeiEwRyLdJft781dEYyiuznPR7XYdBGBBmVXq, Other(Custom { kind: Other, error: Timeout })), (/ip4/132.181.16.53/tcp/46818/p2p/12D3KooWMAd3sjMgeiEwRyLdJft781dEYyiuznPR7XYdBGBBmVXq, Other(Custom { kind: Other, error: Timeout })), (/ip4/132.181.16.53/tcp/41797/p2p/12D3KooWMAd3sjMgeiEwRyLdJft781dEYyiuznPR7XYdBGBBmVXq, Other(Custom { kind: Other, error: Timeout })), (/ip4/132.181.16.53/tcp/58316/p2p/12D3KooWMAd3sjMgeiEwRyLdJft781dEYyiuznPR7XYdBGBBmVXq, Other(Custom { kind: Other, error: Timeout }))]) }
+unhandled: OutgoingConnectionError { connection_id: ConnectionId(12), peer_id: Some(PeerId("12D3KooWFnGMgKJByBoSVrE5nKwU7bVg2AMLJJpazfTarKMtUSHd")), error: Transport([(/ip4/203.211.77.76/tcp/17757/p2p/12D3KooWFnGMgKJByBoSVrE5nKwU7bVg2AMLJJpazfTarKMtUSHd, Other(Custom { kind: Other, error: Timeout }))]) }
+unhandled: Dialing { peer_id: Some(PeerId("12D3KooWCx1zehHFojZ371UaGgFZ27GWKbcwjnkJGyaZ3E6vCt95")), connection_id: ConnectionId(13) }
+unhandled: Dialing { peer_id: Some(PeerId("12D3KooWDmquG4YHoZ44kQ53DXqoZQ3ikV5sgWngdFtM4M2BHeGc")), connection_id: ConnectionId(14) }
+unhandled: Dialing { peer_id: Some(PeerId("12D3KooWKobPGGsTgG28qMGPk75hx8aUcaLVbAERDdXCk6nkLZzT")), connection_id: ConnectionId(15) }
+^C
+alex@alex-MS-7E02:~/Desktop/school/distr/asg2$ 
