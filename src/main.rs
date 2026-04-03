@@ -20,7 +20,7 @@ use libp2p::{
 };
 
 use clap::Parser;
-use futures::StreamExt;
+use futures::{StreamExt, task::Poll};
 use ed25519_dalek::Signature;
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
@@ -30,12 +30,24 @@ use std::{error::Error, fs,
         Hash,
         Hasher
     },
-    time::Duration};
+    time::Duration,
+    io::stdout};
 use uuid::Uuid;
 use prost::Message;
 use bulletin::PeerBoardMessage;
 use rusqlite::{Connection, Result as SqResult};
-use crossterm::event;
+use crossterm::{event::{self, Event, KeyCode, KeyEvent, KeyEventKind}, terminal::{disable_raw_mode, enable_raw_mode}};
+use ratatui::{
+    buffer::Buffer,
+    layout::Rect,
+    style::Stylize,
+    symbols::border,
+    text::{Line, Text},
+    widgets::{Block, Paragraph, Widget},
+    DefaultTerminal, Frame,
+    Terminal,
+    prelude::CrosstermBackend
+};
 
 
 #[derive(Parser)]
@@ -72,6 +84,8 @@ pub mod bulletin {
     include!(concat!(env!("OUT_DIR"), "/peerboard.v1.rs"));
 }
 
+
+
 fn check_msg(msg: &PeerBoardMessage) -> bool {
 
     let now = std::time::SystemTime::now()
@@ -96,6 +110,100 @@ fn check_msg(msg: &PeerBoardMessage) -> bool {
         return false;
     }
     return true;
+}
+
+struct AppState {
+    current_topic: String,
+    input_buffer: String,
+}
+
+async fn run_tui(
+    swarm: &mut libp2p::Swarm<MyBehaviour>,
+    state: &mut AppState,
+    conn: &Connection
+) -> Result<(), Box<dyn Error>> {
+    // start
+    enable_raw_mode();
+    let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+    terminal.clear();
+
+    loop {
+
+        // draw the tui
+        terminal.draw(|frame| {
+            draw_ui(frame, state);// TODO!!!
+        })?;
+
+        // handle inputs
+        if event::poll(Duration::from_millis(100))? {
+            if let Event::Key(key) = event::read()? {
+                match key.code {
+                    KeyCode::Enter => {
+                        todo!();
+                    },
+
+                    KeyCode::Char(c) => {
+                        state.input_buffer.push(c);
+                    },
+
+                    KeyCode::Backspace => {
+                        state.input_buffer.pop();
+                    },
+
+                    KeyCode::Esc => break,
+
+                    _ => {}
+                }
+            }
+        }
+
+        // all swarm stuff
+        while let Poll::Ready((event)) = futures::poll!(swarm.select_next_some()) {
+            match event {
+                
+                // gossipsub listen
+                SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
+                    message,
+                    ..
+                    })) => {
+                        match PeerBoardMessage::decode(message.data.as_slice()) {
+                            Ok(msg) => {
+                                // check the message for validity
+                                if (check_msg(&msg)) {
+                                    // chgeck if it exists within the db v
+
+                                    let msg_exists: bool = conn
+                                        .query_row(
+                                            "SELECT COUNT(*) FROM msgs WHERE message_id = ?1",
+                                            [&msg.message_id],
+                                            |row| row.get::<_, i64>(0),
+                                        )
+                                        .unwrap_or(0) > 0;
+
+                                    if !msg_exists {
+                                        // valid good non duplicate message
+                                        // add it to the db
+                                        conn.execute(
+                                            "INSERT INTO msgs (peer_id, topic, content, timestamp, message_id, nickname)
+                                            VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                                        (msg.peer_id, msg.topic, msg.content, msg.timestamp, msg.message_id, msg.nickname),
+                                        ).expect("couldnt add msg to the db");
+                                    }
+                                }
+                            },
+                            Err(e) => {},
+                        }
+                    }
+
+                _ => {},
+            }
+        }
+    }
+
+
+    disable_raw_mode()?;
+    terminal.clear()?;
+    Ok(())
 }
 
 #[tokio::main]
@@ -305,6 +413,8 @@ async fn main() ->Result<(), Box<dyn Error>> {
 
                 
             }
+
+            
 
             // swam match
             event = swarm.select_next_some() => match event {
