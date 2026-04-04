@@ -5,18 +5,7 @@ use tokio::{
 };
 
 use libp2p::{
-    Multiaddr,
-    PeerId,
-    StreamProtocol,
-    identity::Keypair,
-    kad::{Behaviour as KadBehaviour, Config as KadConfig, Event as KadEvent, Mode, QueryResult, store::MemoryStore},
-    noise,
-    request_response::{self, ProtocolSupport},
-    swarm::{NetworkBehaviour, SwarmEvent},
-    tcp,
-    yamux,
-    gossipsub,
-    mdns,
+    Multiaddr, PeerId, StreamProtocol, gossipsub::{self, PublishError}, identity::Keypair, kad::{Behaviour as KadBehaviour, Config as KadConfig, Event as KadEvent, Mode, QueryResult, store::MemoryStore}, mdns, noise, request_response::{self, ProtocolSupport}, swarm::{self, NetworkBehaviour, SwarmEvent}, tcp, yamux
 };
 
 use clap::Parser;
@@ -24,29 +13,26 @@ use futures::{StreamExt, task::Poll};
 use ed25519_dalek::Signature;
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
-use std::{error::Error, fs,
-    hash::{
+use std::{collections::HashMap, error::Error, fs, hash::{
         DefaultHasher,
         Hash,
         Hasher
-    },
-    time::Duration,
-    io::stdout};
+    }, io::stdout, time::Duration, u8::MIN};
 use uuid::Uuid;
 use prost::Message;
 use bulletin::PeerBoardMessage;
 use rusqlite::{Connection, Result as SqResult};
 use crossterm::{event::{self, Event, KeyCode, KeyEvent, KeyEventKind}, terminal::{disable_raw_mode, enable_raw_mode}};
 use ratatui::{
+    DefaultTerminal,
+    Frame, Terminal,
     buffer::Buffer,
-    layout::Rect,
+    layout::{Constraint, Rect, Layout},
+    prelude::CrosstermBackend,
     style::Stylize,
     symbols::border,
     text::{Line, Text},
-    widgets::{Block, Paragraph, Widget},
-    DefaultTerminal, Frame,
-    Terminal,
-    prelude::CrosstermBackend
+    widgets::{Block, Paragraph, Widget, ListItem, List, ListDirection}
 };
 
 
@@ -65,7 +51,7 @@ struct Cli {
     #[arg(long)]
     sqldb: String,
 
-    #[arg(long)]
+    #[arg(short, long, action = clap::ArgAction::SetTrue)]
     debug: bool,// if true, dont do TUI stuff, else, do TUI stuff
 
 }
@@ -97,7 +83,7 @@ fn check_msg(msg: &PeerBoardMessage) -> bool {
         println!("1");
         return false;
     }
-    if (msg.topic[0..13].as_bytes() != "peerboard/v1/".as_bytes()) {
+    if (!msg.topic.starts_with("peerboard/v1/")) {
         println!("2");
         return false;
     }
@@ -112,20 +98,55 @@ fn check_msg(msg: &PeerBoardMessage) -> bool {
     return true;
 }
 
+struct DisplayMessage {
+    nickname: String,
+    peer_id: String,
+    content: String,
+    timestamp: i64,
+}
+
 struct AppState {
     current_topic: String,
-    input_buffer: String,
+    subscribed_topics: Vec<String>,
+    msg_buffer: String,
+    topic_buffer: String,
+    messages: Vec<DisplayMessage>, // oldest first
+    recent_topics: Vec<String>,
+    selected_area: u8, // 0 is the left area, 1 is the right area
+    peer_counts: std::collections::HashMap<String, usize>,
+}
+
+fn load_messages(conn: &Connection, topic: &str) -> Vec<DisplayMessage> {
+    let mut stmt = conn.prepare(
+        "SELECT nickname, peer_id, content, timestamp
+        FROM msgs WHERE topic = ?1
+        ORDER BY TIMESTAMP ASC"
+    ).unwrap();
+
+    stmt.query_map([topic], |row| {
+        Ok(DisplayMessage {
+            nickname: row.get(0)?,
+            peer_id: row.get(1)?,
+            content: row.get(2)?,
+            timestamp: row.get(3)?,
+        })
+    })
+    .unwrap()
+    .filter_map(|r| r.ok())
+    .collect()
 }
 
 async fn run_tui(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     swarm: &mut libp2p::Swarm<MyBehaviour>,
     state: &mut AppState,
     conn: &Connection
 ) -> Result<(), Box<dyn Error>> {
     // start
-    enable_raw_mode();
-    let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
-    terminal.clear();
+    
+    // load all messages from the db
+    state.messages = load_messages(conn, &state.current_topic);
+
 
     loop {
 
@@ -139,18 +160,95 @@ async fn run_tui(
             if let Event::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Enter => {
-                        todo!();
+                        if state.selected_area == 1 {
+                            // send the message!
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs() as i64;
+
+                            let msg = PeerBoardMessage {
+                                peer_id: swarm.local_peer_id().to_string(),
+                                topic: state.current_topic.clone(),
+                                content: state.msg_buffer.clone(),
+                                timestamp: now,
+                                message_id: Uuid::new_v4().to_string(),
+                                nickname: "alex".to_string(),
+                            };
+
+                            // check the message for validity
+                            if (check_msg(&msg)) {
+                                let mut buf = Vec::new();
+                                msg.encode(&mut buf).unwrap();
+                                // construct the topic
+                                let topic = gossipsub::IdentTopic::new(&state.current_topic);
+                                // send it out!
+                                match swarm.behaviour_mut().gossipsub.publish(topic, buf) {
+                                    Ok(_) => {},
+                                    Err(gossipsub::PublishError::NoPeersSubscribedToTopic) => {},// dont care!
+                                    Err(e) => return Err(e.into()),
+                                }
+
+                                // add it to the db
+                                conn.execute(
+                                    "INSERT INTO msgs (peer_id, topic, content, timestamp, message_id, nickname)
+                                    VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                                (msg.peer_id, msg.topic, msg.content, msg.timestamp, msg.message_id, msg.nickname),
+                                ).expect("couldnt add msg to the db");
+                                // clear the input buffer
+                                state.msg_buffer.clear();
+                                // update the states msgs'
+                                state.messages = load_messages(conn, &state.current_topic);
+                            }
+                        }
+                        else {
+                            // sub to the new topic.
+                            // stay subbed to the previous topic.
+                            // this is a design choice, so you can have 2 coversations in different topics at the same time.
+                            // unsubbing only happens when the app closes (neccasarily)
+                            let topic_str = format!("peerboard/v1/{}", state.topic_buffer.clone());
+                            let new_topic = gossipsub::IdentTopic::new(topic_str.clone());
+                            swarm.behaviour_mut().gossipsub.subscribe(&new_topic)?;
+                            if (!(state.recent_topics.contains(&topic_str))) {
+                                state.recent_topics.push(topic_str.clone());
+                            }
+                            state.current_topic = topic_str.clone();
+                            state.topic_buffer.clear();
+
+                            // update the messages buffer too
+                            state.messages = load_messages(conn, &state.current_topic);
+
+                        }
                     },
 
-                    KeyCode::Char(c) => {
-                        state.input_buffer.push(c);
+                    KeyCode::Char(c) => {// add it to buffer
+                        if state.selected_area == 1 {
+                            state.msg_buffer.push(c);
+                        } else {
+                            state.topic_buffer.push(c);
+                        }
+                        
                     },
 
-                    KeyCode::Backspace => {
-                        state.input_buffer.pop();
+                    KeyCode::Backspace => {//remove latest from buffer
+                        if state.selected_area == 1 {
+                            state.msg_buffer.pop();
+                        } else {
+                           state.topic_buffer.pop();
+                        }
                     },
 
-                    KeyCode::Esc => break,
+                    KeyCode::Up => {// change selected area
+                        state.selected_area = 0;
+                    }
+
+                    KeyCode::Down => {// change selected area
+                        state.selected_area = 1;
+                    }
+
+                    
+
+                    KeyCode::Esc => break,// close da app!
 
                     _ => {}
                 }
@@ -188,26 +286,129 @@ async fn run_tui(
                                             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                                         (msg.peer_id, msg.topic, msg.content, msg.timestamp, msg.message_id, msg.nickname),
                                         ).expect("couldnt add msg to the db");
+                                        // add it toi the states msgs'
+                                        state.messages = load_messages(conn, &state.current_topic);
                                     }
                                 }
-                            },
-                            Err(e) => {},
+                            },                            
+                            Err(_e) => {},
                         }
-                    }
+                    },
+
+                SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Subscribed { peer_id, topic })) => {
+                    *state.peer_counts.entry(topic.to_string()).or_insert(0) += 1;
+                }
+
+                SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Unsubscribed { peer_id, topic })) => {
+                    *state.peer_counts.entry(topic.to_string()).or_insert(1) -= 1;
+                }
+
+                
 
                 _ => {},
             }
         }
+
+        
+        
     }
 
+    
 
     disable_raw_mode()?;
     terminal.clear()?;
     Ok(())
 }
 
+fn draw_ui(frame: &mut Frame, state: &mut AppState) {
+
+    let outer_chunks = Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Max(80),
+        Constraint::Length(3),
+    ]).split(frame.area());// the whole area
+
+    let topic_chunks = Layout::vertical([
+        Constraint::Min(0),
+        //Constraint::Max(80),
+        Constraint::Length(3),
+    ]).split(outer_chunks[0]);
+    
+    let msg_chunks = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(3),
+    ]).split(outer_chunks[1]);// subsection withing the seconds chunk of the outer chunk
+
+    // input buffer stuff
+    
+    let (msg_buffer, topic_buffer) = if state.selected_area == 1 {
+        (format!("{}█", state.msg_buffer), state.topic_buffer.clone())
+    } else {
+        (state.msg_buffer.clone(), format!("{}█", state.topic_buffer))
+    };
+
+        // msg chunks
+    // calculate the height avaliable vs the height needed to render messages
+    let avavliable_height = msg_chunks[0].height as usize;
+
+    let mut rows_used = 0;
+    let mut visible: Vec<&DisplayMessage> = Vec::new();
+
+    for msgs in state.messages.iter().rev() {// reverse order, was sorted as ACCENDING in sql
+        let msg_height = 2; // 1 for name + peer_id, 1 for content
+        if rows_used + msg_height > avavliable_height - 2 {
+            break;
+        }
+        rows_used += msg_height;
+        visible.push(msgs);
+    }
+
+     // message area
+    let items: Vec<ListItem> = visible.iter().map(|msg| {
+
+        let header = Line::from(format!(
+            "# # {} ({}) # #",
+            msg.nickname,
+            &msg.peer_id,
+        ));
+        let body = Line::from(msg.content.clone());
+        ListItem::new(vec![header, body])
+    }).collect();
+
+    let list = List::new(items)
+        .block(Block::bordered()
+        .title(format!("{}. #peers: {}",
+            state.current_topic.clone(), state.peer_counts.get(&state.current_topic).unwrap_or(&0)))
+            .border_set(border::THICK))
+        .direction(ListDirection::BottomToTop);
+    
+
+    // input box
+    let input = Paragraph::new(msg_buffer.as_str())
+        .block(Block::bordered().title("Input"));
+    
+
+        // topic chunks
+    
+    let topic_list = List::new(state.recent_topics.clone())
+        .block(Block::bordered().title("Recently Visited").border_set(border::THICK));
+    
+
+    let topic_input = Paragraph::new(topic_buffer.as_str())
+        .block(Block::bordered().title("Add New Topic"));
+
+    
+    frame.render_widget(list, msg_chunks[0]);
+    frame.render_widget(input, msg_chunks[1]);
+    frame.render_widget(topic_list, topic_chunks[0]);
+    frame.render_widget(topic_input, topic_chunks[1]);
+
+
+
+}
+
 #[tokio::main]
-async fn main() ->Result<(), Box<dyn Error>> {
+async fn main() -> Result<(), Box<dyn Error>> {
 
     // cli input
     
@@ -368,124 +569,150 @@ async fn main() ->Result<(), Box<dyn Error>> {
 
 
 
+    // the main thing!!! v
 
+    if (!cli.debug) {
+        let mut app = AppState{
+            current_topic: topic_string.clone(),
+            subscribed_topics: vec![topic_string.clone()],
+            msg_buffer: String::new(),
+            topic_buffer: String::new(),
+            messages: Vec::new(),
+            recent_topics: Vec::new(),
+            selected_area: 0,
+            peer_counts: HashMap::new(),
+        };
 
-    let mut other_peer_id: Option<PeerId> = None;
+        enable_raw_mode()?;
+        let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+        terminal.clear()?;
 
-    let mut stdin: io::Lines<BufReader<io::Stdin>> = io::BufReader::new(io::stdin()).lines();
+        let result = run_tui(&mut terminal, &mut swarm, &mut app, &conn).await;
 
-    loop {
-        select! {
+        disable_raw_mode()?;
+        terminal.clear()?;
 
-            // simple msg match
-            Ok(Some(line)) = stdin.next_line() => {
-                // construct a message based on the input
+        result
+    } else {
 
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as i64;
+        let mut other_peer_id: Option<PeerId> = None;
 
-                let msg = PeerBoardMessage {
-                    peer_id: local_peer_id.to_string(),
-                    topic: topic_string.clone(),
-                    content: line,
-                    timestamp: now,
-                    message_id: Uuid::new_v4().to_string(),
-                    nickname: "alex".to_string(),
-                };
+        let mut stdin: io::Lines<BufReader<io::Stdin>> = io::BufReader::new(io::stdin()).lines();
 
-                // check the message for validity
-                if (check_msg(&msg)) {
-                    let mut buf = Vec::new();
-                    msg.encode(&mut buf).unwrap();
-                    swarm.behaviour_mut().gossipsub.publish(topic.clone(), buf)?;
-                    // add it to the db
-                    conn.execute(
-                        "INSERT INTO msgs (peer_id, topic, content, timestamp, message_id, nickname)
-                        VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    (msg.peer_id, msg.topic, msg.content, msg.timestamp, msg.message_id, msg.nickname),
-                    ).expect("couldnt add msg to the db");
-                }
-                else {
-                    println!("bad message. didnt publish");
+        loop {
+            select! {
+
+                // simple msg match
+                Ok(Some(line)) = stdin.next_line() => {
+                    // construct a message based on the input
+
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs() as i64;
+
+                    let msg = PeerBoardMessage {
+                        peer_id: local_peer_id.to_string(),
+                        topic: topic_string.clone(),
+                        content: line,
+                        timestamp: now,
+                        message_id: Uuid::new_v4().to_string(),
+                        nickname: "alex".to_string(),
+                    };
+
+                    // check the message for validity
+                    if (check_msg(&msg)) {
+                        let mut buf = Vec::new();
+                        msg.encode(&mut buf).unwrap();
+                        swarm.behaviour_mut().gossipsub.publish(topic.clone(), buf)?;
+                        // add it to the db
+                        conn.execute(
+                            "INSERT INTO msgs (peer_id, topic, content, timestamp, message_id, nickname)
+                            VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        (msg.peer_id, msg.topic, msg.content, msg.timestamp, msg.message_id, msg.nickname),
+                        ).expect("couldnt add msg to the db");
+                    }
+                    else {
+                        println!("bad message. didnt publish");
+                    }
+
+                    
                 }
 
                 
-            }
 
-            
+                // swam match
+                event = swarm.select_next_some() => match event {
+                    // listening on ...
+                    SwarmEvent::NewListenAddr { address, .. } => {
+                        println!("Listening on addr: {address}");
+                    }
+                    // new connection made ...
+                    SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                        other_peer_id = Some(peer_id);
+                        println!("connection established with: {}", other_peer_id.unwrap().to_string());
+                    }
+                    // some kademlia stuff
+                    SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(e)) => {
+                        println!("kademlia event {e:?}");
+                    }
+                    // gossipsub listen
+                    SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
+                        message,
+                        ..
+                        })) => {
+                            match PeerBoardMessage::decode(message.data.as_slice()) {
+                                Ok(msg) => {
+                                    // check the message for validity
+                                    if (check_msg(&msg)) {
+                                        // chgeck if it exists within the db v
 
-            // swam match
-            event = swarm.select_next_some() => match event {
-                // listening on ...
-                SwarmEvent::NewListenAddr { address, .. } => {
-                    println!("Listening on addr: {address}");
-                }
-                // new connection made ...
-                SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                    other_peer_id = Some(peer_id);
-                    println!("connection established with: {}", other_peer_id.unwrap().to_string());
-                }
-                // some kademlia stuff
-                SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(e)) => {
-                    println!("kademlia event {e:?}");
-                }
-                // gossipsub listen
-                SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
-                    message,
-                    ..
-                    })) => {
-                        match PeerBoardMessage::decode(message.data.as_slice()) {
-                            Ok(msg) => {
-                                // check the message for validity
-                                if (check_msg(&msg)) {
-                                    // chgeck if it exists within the db v
+                                        let msg_exists: bool = conn
+                                            .query_row(
+                                                "SELECT COUNT(*) FROM msgs WHERE message_id = ?1",
+                                                [&msg.message_id],
+                                                |row| row.get::<_, i64>(0),
+                                            )
+                                            .unwrap_or(0) > 0;
 
-                                    let msg_exists: bool = conn
-                                        .query_row(
-                                            "SELECT COUNT(*) FROM msgs WHERE message_id = ?1",
-                                            [&msg.message_id],
-                                            |row| row.get::<_, i64>(0),
-                                        )
-                                        .unwrap_or(0) > 0;
+                                        if msg_exists {
+                                            //duplicate message
+                                            println!("duplicate message recieved");
+                                        }
+                                        else {
+                                            // valid good non duplicate message
+                                            println!("[{}] {}: {}", msg.topic, msg.nickname, msg.content);
+                                            // add it to the db
+                                            conn.execute(
+                                                "INSERT INTO msgs (peer_id, topic, content, timestamp, message_id, nickname)
+                                                VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                                            (msg.peer_id, msg.topic, msg.content, msg.timestamp, msg.message_id, msg.nickname),
+                                            ).expect("couldnt add msg to the db");
+                                        }
 
-                                    if msg_exists {
-                                        //duplicate message
-                                        println!("duplicate message recieved");
+                                        
+                                        
+
                                     }
                                     else {
-                                        // valid good non duplicate message
-                                        println!("[{}] {}: {}", msg.topic, msg.nickname, msg.content);
-                                        // add it to the db
-                                        conn.execute(
-                                            "INSERT INTO msgs (peer_id, topic, content, timestamp, message_id, nickname)
-                                            VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                                        (msg.peer_id, msg.topic, msg.content, msg.timestamp, msg.message_id, msg.nickname),
-                                        ).expect("couldnt add msg to the db");
+                                        println!("received a malformed message");
                                     }
-
                                     
-                                    
-
-                                }
-                                else {
-                                    println!("received a malformed message");
-                                }
-                                
-                            },
-                            Err(e) => println!("failed to decode msg: {e}"),
+                                },
+                                Err(e) => println!("failed to decode msg: {e}"),
+                            }
                         }
-                    }
-                _ => println!("unhandled: {:?}", event),
-            }
+                    _ => println!("unhandled: {:?}", event),
+                }
 
-            
-            
+                
+                
+            }
         }
+
+        Ok(())
+
     }
 
-
-
-    Ok(())
+    
 }
