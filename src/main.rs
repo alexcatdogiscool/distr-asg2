@@ -87,7 +87,7 @@ fn check_msg(msg: &PeerBoardMessage) -> bool {
         println!("2");
         return false;
     }
-    if (now - msg.timestamp > 300) {
+    if (msg.timestamp - now > 300) {
         println!("3");
         return false;
     }
@@ -477,6 +477,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let mut kad_config = KadConfig::new(StreamProtocol::new("/peerboard/kad/1.0.0"));
             kad_config.set_query_timeout(Duration::from_secs(30));
             let mut kademlia = KadBehaviour::with_config(peer_id, store, kad_config);
+            kademlia.set_mode(Some(Mode::Server));
+            
 
             // set up mdns
             let mdns = mdns::tokio::Behaviour::new(
@@ -485,16 +487,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
             // set up gossipsub
             // msg id auth
-            let msg_id_fn = |msg: &gossipsub::Message| {
-                // random uuid
-                gossipsub::MessageId::from(Uuid::new_v4().to_string())
-            };
+            //let msg_id_fn = |msg: &gossipsub::Message| {
+            //    // random uuid
+            //    gossipsub::MessageId::from(Uuid::new_v4().to_string())
+            //};
 
             // cfg
             let gossipsub_config = gossipsub::ConfigBuilder::default()
                 .heartbeat_interval(Duration::from_secs(10))
                 .validation_mode(gossipsub::ValidationMode::None)// temporary, maybe
-                .message_id_fn(msg_id_fn)
+                //.message_id_fn(msg_id_fn)
                 .build()
                 .expect("poop");
 
