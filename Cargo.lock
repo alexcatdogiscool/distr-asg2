@@ -302,6 +302,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
+name = "bimap"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "230c5f1ca6a325a32553f8640d31ac9b49f2411e901e427570154868b46da4f7"
+
+[[package]]
 name = "bit-set"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1789,6 +1795,7 @@ dependencies = [
  "libp2p-metrics",
  "libp2p-noise",
  "libp2p-quic",
+ "libp2p-rendezvous",
  "libp2p-request-response",
  "libp2p-swarm",
  "libp2p-tcp",
@@ -2017,6 +2024,30 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "libp2p-rendezvous"
+version = "0.17.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31114bab295403e9934ae2e4415c45d681353829ea218390eed8f5bcc82dd1fb"
+dependencies = [
+ "async-trait",
+ "asynchronous-codec",
+ "bimap",
+ "futures",
+ "futures-timer",
+ "hashlink 0.11.0",
+ "libp2p-core",
+ "libp2p-identity",
+ "libp2p-request-response",
+ "libp2p-swarm",
+ "quick-protobuf",
+ "quick-protobuf-codec",
+ "rand 0.8.5",
+ "thiserror 2.0.18",
+ "tracing",
+ "web-time",
 ]
 
 [[package]]
