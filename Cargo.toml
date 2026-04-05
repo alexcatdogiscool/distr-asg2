@@ -19,7 +19,7 @@ crossterm = "0.29.0"
 
 [dependencies.libp2p]
 version = "0.56.0"
-features = ["tokio", "noise", "macros", "tcp", "quic", "yamux", "cbor", "request-response", "kad", "gossipsub", "mdns"]
+features = ["tokio", "noise", "macros", "tcp", "quic", "yamux", "cbor", "request-response", "kad", "gossipsub", "mdns", "rendezvous"]
 
 [dependencies.uuid]
 version = "1.23.0"
