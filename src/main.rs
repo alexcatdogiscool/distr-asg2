@@ -26,7 +26,7 @@ use std::{collections::HashMap, error::Error, fs, hash::{
         DefaultHasher,
         Hash,
         Hasher
-    }, io::stdout, net::Incoming, time::Duration, u8::MIN};
+    }, io::stdout, net::Incoming, process::exit, time::Duration, u8::MIN};
 use uuid::Uuid;
 use prost::Message;
 
@@ -34,7 +34,7 @@ use bulletin::PeerBoardMessage;
 use BattleShip::*;
 
 use rusqlite::{Connection, Result as SqResult};
-use crossterm::{event::{self, Event, KeyCode, KeyEvent, KeyEventKind}, terminal::{disable_raw_mode, enable_raw_mode}};
+use crossterm::{cursor, event::{self, Event, KeyCode, KeyEvent, KeyEventKind}, terminal::{disable_raw_mode, enable_raw_mode}};
 use ratatui::{
     DefaultTerminal,
     Frame, Terminal,
@@ -154,6 +154,16 @@ struct BuildState {
     opponent_nickname: String,
     my_board: [[bool; 10];10],
     current_ship: Ship,
+    cursor: [i32;2],
+    is_placing: bool,
+    placing_cursor: QuadDirection,
+}
+
+enum QuadDirection {
+    UP,
+    LEFT,
+    DOWN,
+    RIGHT,
 }
 
 enum Ship {
@@ -281,7 +291,9 @@ async fn run_tui(
                 GameState::ACCEPT(acpt) => {
                     draw_proposition(frame, state);
                 }
-                GameState::BUILD(build) => {todo!()}
+                GameState::BUILD(build) => {
+                    draw_build(frame, state);
+                }
             };
             
         })?;
@@ -489,7 +501,11 @@ async fn run_tui(
                                             opponent_peer_id: acpt.peer.as_ref().unwrap().peer_id,
                                             opponent_nickname: acpt.peer.as_ref().unwrap().nickname.clone(),// hell
                                             my_board: [[false;10];10],
-                                            current_ship: Ship::CARRIER });
+                                            current_ship: Ship::CARRIER,
+                                            cursor: [0;2],
+                                            is_placing: false,
+                                            placing_cursor: QuadDirection::UP,
+                                        });
                                     }
                                     false => {
                                         // ignore, go back to rendezvous
@@ -505,6 +521,78 @@ async fn run_tui(
                             _ => {}
                             
                         }
+                    }
+
+                    GameState::BUILD(build) => {
+
+                        match build.is_placing {
+                            false => {//moving cursor
+                                match key.code {
+
+                                    // cursor movement
+                                    KeyCode::Up => {
+                                        build.cursor[1] = 0.max(build.cursor[1] - 1);
+                                    }
+                                    KeyCode::Down => {
+                                        build.cursor[1] = 9.min(build.cursor[1] + 1);
+                                    }
+                                    KeyCode::Left => {
+                                        build.cursor[0] = 0.max(build.cursor[0] - 1);
+                                    }
+                                    KeyCode::Right => {
+                                        build.cursor[0] = 9.min(build.cursor[0] + 1);
+                                    }
+
+                                    KeyCode::Enter => {
+                                        build.is_placing = true;
+                                    }
+                                    
+                                    
+                                    
+
+                                    KeyCode::Esc => {
+                                        safe_exit(swarm, state);
+                                        break;
+                                    }
+                                    _ => {},
+                                }
+                            }
+                            true => {// placing a peice
+                                match key.code {
+
+                                    KeyCode::Up => build.placing_cursor = QuadDirection::UP,
+                                    KeyCode::Down => build.placing_cursor = QuadDirection::DOWN,
+                                    KeyCode::Left => build.placing_cursor = QuadDirection::LEFT,
+                                    KeyCode::Right => build.placing_cursor = QuadDirection::RIGHT,
+
+                                    KeyCode::Backspace => {// dont place, go back
+                                        build.is_placing = false;
+                                    }
+
+                                    KeyCode::Enter => {// place the peice here!
+                                        
+                                        if is_place_possible(&build) {
+                                            //place the jit
+                                            build.is_placing = false;// in any case
+                                        }// else do nothing
+                                        
+                                        
+
+                                    }
+                                    
+
+
+
+                                    _ => {
+                                        safe_exit(swarm, state);
+                                        break;
+                                    }
+                                }
+
+                            }
+                        }
+
+                        
                     }
 
 
@@ -663,6 +751,75 @@ fn safe_exit(swarm: &mut libp2p::Swarm<MyBehaviour>, state: &mut AppState) {
         libp2p::rendezvous::Namespace::new("peerboard/challenge/seeking".to_string()).unwrap(),
         BOOTSTRAP_PEER_ID.parse().unwrap(),
     );
+}
+
+fn is_place_possible(state: &BuildState) -> bool {
+
+    fn collision(board: [[bool;10];10], here: [i32;2], direction: &QuadDirection, len: usize) -> bool {
+        let mut tmp: [[bool;10];10] = [[false;10];10];
+        match direction {
+            QuadDirection::UP => {
+                for i in 0..len {
+                    let here2: [i32;2] = [here[0], here[1] - 1];
+                    if board[here2[0] as usize][here2[1] as usize] {
+                        return true;
+                    }
+                }
+                false
+            }
+
+            QuadDirection::RIGHT => {
+                for i in 0..len {
+                    let here2: [i32;2] = [here[0] + 1, here[1]];
+                    if board[here2[0] as usize][here2[1] as usize] {
+                        return true;
+                    }
+                }
+                false
+            }
+
+            QuadDirection::DOWN => {
+                for i in 0..len {
+                    let here2: [i32;2] = [here[0], here[1] + 1];
+                    if board[here2[0] as usize][here2[1] as usize] {
+                        return true;
+                    }
+                }
+                false
+            }
+
+            QuadDirection::LEFT => {
+                for i in 0..len {
+                    let here2: [i32;2] = [here[0] - 1, here[1]];
+                    if board[here2[0] as usize][here2[1] as usize] {
+                        return true;
+                    }
+                }
+                false
+            }
+        }
+    }
+
+    fn out_of_bounds(here: [i32;2], direction: &QuadDirection, len: usize) -> bool {
+        match direction {
+            QuadDirection::UP => {
+                here[1] - (len as i32) < 0
+            }
+            QuadDirection::RIGHT => {
+                here[0] + (len as i32) > 9
+            }
+            QuadDirection::DOWN => {
+                here[0] + (len as i32) > 9
+            }
+            QuadDirection::LEFT => {
+                here[0] - (len as i32) < 0
+            }
+        }
+    }
+
+    return out_of_bounds(state.cursor, &state.placing_cursor, state.current_ship.length() as usize)
+            || collision(state.my_board, state.cursor, &state.placing_cursor, state.current_ship.length() as usize);
+
 }
 
 fn draw_ui(frame: &mut Frame, state: &mut AppState) {
@@ -836,6 +993,70 @@ fn draw_proposition(frame: &mut Frame, state: &mut AppState) {
 
     }
 
+}
+
+fn draw_build(frame: &mut Frame, state: &mut AppState) {
+    if let GameState::BUILD(build) = &state.game_state {
+        let board_str = draw_board(&build);
+
+        let board = Paragraph::new(board_str)
+            .block(Block::bordered().title("Place your ships"));
+
+        frame.render_widget(board, frame.area());
+    }
+    
+}
+
+fn draw_board(state: &BuildState) -> String {
+    
+    
+    let board_str: String = state.my_board.iter().enumerate().map(|(r, row)| {
+        let row_str: String = row.iter().enumerate().map(|(c, cell)| {
+            if state.is_placing {
+                match &state.placing_cursor {
+                    QuadDirection::UP => {
+                        if (state.cursor[1] != 0) {// yuck and i hate it!
+                            if r == state.cursor[1] as usize - 1 && c == state.cursor[0] as usize {
+                                return "[|]".to_string();
+                            }
+                        }
+                    }
+                    QuadDirection::RIGHT => {
+                        if c == state.cursor[0] as usize + 1 && r == state.cursor[1] as usize {
+                            return "[-]".to_string();
+                        }
+                    }
+                    QuadDirection::DOWN => {
+                        if r == state.cursor[1] as usize + 1 && c == state.cursor[0] as usize {
+                            return "[|]".to_string();
+                        }
+                    }
+                    QuadDirection::LEFT => {
+                        if (state.cursor[0] != 0) {
+                            if c == state.cursor[0] as usize - 1 && r == state.cursor[1] as usize {
+                                return "[-]".to_string();
+                            }
+                        }
+                        
+                    }
+                    
+
+                }
+            }
+            if r == state.cursor[1] as usize && c == state.cursor[0] as usize {
+                "[+]".to_string()
+            }
+            else if (*cell) {
+                "[X]".to_string()
+            } else {
+                "[ ]".to_string()
+            }
+        }).collect();
+        row_str + "\n"
+    }).collect();
+
+    return board_str;
+    
 }
 
 #[tokio::main]
