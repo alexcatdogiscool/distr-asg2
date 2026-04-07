@@ -157,6 +157,37 @@ struct BuildState {
     cursor: [i32;2],
     is_placing: bool,
     placing_cursor: QuadDirection,
+    board_ready: bool,
+    am_challenger: bool
+}
+
+impl BuildState {
+    fn place(&mut self) {
+        // we know that placing is possible because we checked before running this (hopefully)
+        match self.placing_cursor {
+            QuadDirection::UP => {
+                for r in (self.cursor[1] - (self.current_ship.length() as i32 - 1))..=self.cursor[1] {
+                    self.my_board[r as usize][self.cursor[0] as usize] = true;
+                }
+            }
+            QuadDirection::RIGHT => {
+                for c in self.cursor[0]..self.cursor[0] + self.current_ship.length() as i32 {
+                    self.my_board[self.cursor[1] as usize][c as usize] = true;
+                }
+            }
+            QuadDirection::DOWN => {
+                for r in self.cursor[1]..self.cursor[1] + self.current_ship.length() as i32 {
+                    self.my_board[r as usize][self.cursor[0] as usize] = true;
+                }
+            }
+            QuadDirection::LEFT => {
+                for c in (self.cursor[0] - (self.current_ship.length() as i32 - 1))..=self.cursor[0] {
+                    self.my_board[self.cursor[1] as usize][c as usize] = true;
+                }
+            }
+        }
+        self.current_ship = self.current_ship.next();
+    }
 }
 
 enum QuadDirection {
@@ -166,12 +197,14 @@ enum QuadDirection {
     RIGHT,
 }
 
+#[derive(PartialEq)]
 enum Ship {
     CARRIER,
     BATTLESHIP,
     CRUISER,
     SUBMARINE,
     DESTROYER,
+    None
 }
 
 impl Ship {
@@ -182,16 +215,18 @@ impl Ship {
             Ship::CRUISER => 3,
             Ship::SUBMARINE => 3,
             Ship::DESTROYER => 2,
+            Ship::None => 0,
         }
     }
 
-    fn next(&self) -> Option<Ship> {
+    fn next(&self) -> Ship {
         match self {
-            Ship::CARRIER => Some(Ship::BATTLESHIP),
-            Ship::BATTLESHIP => Some(Ship::CRUISER),
-            Ship::CRUISER => Some(Ship::SUBMARINE),
-            Ship::SUBMARINE => Some(Ship::DESTROYER),
-            Ship::DESTROYER => None, // all ships placed, send BoardReady 
+            Ship::CARRIER => Ship::BATTLESHIP,
+            Ship::BATTLESHIP => Ship::CRUISER,
+            Ship::CRUISER => Ship::SUBMARINE,
+            Ship::SUBMARINE => Ship::DESTROYER,
+            Ship::DESTROYER => Ship::None, // all ships placed, send BoardReady 
+            Ship::None => Ship::None
         }
     }
 }
@@ -207,6 +242,9 @@ struct BattleState {
     my_turn: bool,
     shot_seq: u32,
     phase: BattlePhase,
+    cursor: [i32;2],
+    am_challenger: bool,
+    pening_shot: Option<[usize;2]>,
 }
 
 #[derive(Clone)]
@@ -221,6 +259,7 @@ struct SimplePeer {
     nickname: String,
 }
 
+#[derive(PartialEq)]
 enum BattlePhase {
     WaitingForBoardAck,
     WaitingForOpponent,
@@ -431,7 +470,47 @@ async fn run_tui(
                     }
                     // battle
                     GameState::BATTLE(battle) => {
-                        todo!();
+                        match key.code {
+                            KeyCode::Up => {
+                                battle.cursor[1] = 0.max(battle.cursor[1] - 1);
+                            }
+                            KeyCode::Down => {
+                                battle.cursor[1] = 9.min(battle.cursor[1] + 1);
+                            }
+                            KeyCode::Left => {
+                                battle.cursor[0] = 0.max(battle.cursor[0] - 1);
+                            }
+                            KeyCode::Right => {
+                                battle.cursor[0] = 9.min(battle.cursor[0] + 1);
+                            }
+
+                            
+                            KeyCode::Enter => {
+                                if battle.phase == BattlePhase::MyTurn {//fire a shot
+                                    battle.pening_shot = Some([battle.cursor[1] as usize, battle.cursor[0] as usize]);
+                                    //battle.my_shots[battle.cursor[1] as usize][battle.cursor[0] as usize] = true;
+                                    battle.phase = BattlePhase::WaitingForOpponent;
+
+                                    // send the req and wait for response
+                                    let request = BattleshipRequest{ msg: Some(battleship_request::Msg::Shot(Shot {
+                                        seq: battle.shot_seq,
+                                        col: battle.cursor[0] as u32,
+                                        row: battle.cursor[1] as u32
+                                    })) };
+                                    let mut buf = vec![];
+                                    request.encode(&mut buf);
+                                    swarm.behaviour_mut().battleship.send_request(&battle.opponent_peer_id, buf);
+
+                                }// ese do nothing
+                            }
+
+                            KeyCode::Esc => {
+                                safe_exit(swarm, state);
+                                break;
+                            }
+
+                            _ => {}
+                        }
                     }
 
                     GameState::RENDEZVOUS(rend) => {
@@ -505,6 +584,8 @@ async fn run_tui(
                                             cursor: [0;2],
                                             is_placing: false,
                                             placing_cursor: QuadDirection::UP,
+                                            board_ready: false,
+                                            am_challenger: false,// i am accepting, i am not the challenger
                                         });
                                     }
                                     false => {
@@ -573,8 +654,17 @@ async fn run_tui(
                                         
                                         if is_place_possible(&build) {
                                             //place the jit
+                                            build.place();
                                             build.is_placing = false;// in any case
                                         }// else do nothing
+
+                                        // check if we just palced the last peice
+                                        // if so, go to the next state
+                                        if build.current_ship == Ship::None {
+                                            // set board_done to true
+                                            // when we recevie a BoardReady, send BoardAck
+                                            build.board_ready = true;
+                                        }
                                         
                                         
 
@@ -590,6 +680,32 @@ async fn run_tui(
                                 }
 
                             }
+                        }
+
+                        if build.board_ready {
+                            if build.am_challenger {
+                                // request BoardReady
+                                let request = BattleshipRequest { msg: Some(battleship_request::Msg::BoardReady(BoardReady {})) };// ???
+                                let mut buf = vec![];
+                                request.encode(&mut buf);
+                                swarm.behaviour_mut().battleship.send_request(&build.opponent_peer_id, buf);
+
+                                // move into battle state
+                                state.game_state = GameState::BATTLE(BattleState {
+                                    opponent_peer_id: build.opponent_peer_id,
+                                    opponent_nickname: build.opponent_nickname.clone(),
+                                    my_board: build.my_board,
+                                    their_board: [[false;10];10],
+                                    my_shots: [[false;10];10],
+                                    their_shots: [[false;10];10],
+                                    my_turn: true,
+                                    shot_seq: 0,
+                                    phase: BattlePhase::MyTurn,
+                                    cursor: build.cursor,
+                                    am_challenger: true,
+                                    pening_shot: None,
+                                });
+                            }// else wait for BoardReady request
                         }
 
                         
@@ -690,21 +806,31 @@ async fn run_tui(
                 },
 
                 // someone trying to talk to me
-                SwarmEvent::Behaviour(MyBehaviourEvent::Battleship(
+                SwarmEvent::Behaviour(MyBehaviourEvent::Challenge(
                     request_response::Event::Message {
                         peer,
                         message: request_response::Message::Response { response, .. },
                         ..
                     }
                 )) => {
-                    if let GameState::BATTLE(battle) = &mut state.game_state {
-                        match response {
-                            
-                            _ => {}
-                        }
-                        
-                    }
+                    let msg = ChallengeResponse::decode(response.as_slice()).unwrap();
+                    if msg.accepted {
+                        // someone accepted my challenge request
+                        if let GameState::RENDEZVOUS(rend) = &mut state.game_state {
 
+                            state.game_state = GameState::BUILD(BuildState {
+                                opponent_peer_id: peer,
+                                opponent_nickname: "idk".to_string(),
+                                my_board: [[false;10];10],
+                                current_ship: Ship::CARRIER,
+                                cursor: [0,0],
+                                is_placing: false,
+                                placing_cursor: QuadDirection::UP,
+                                board_ready: false,
+                                am_challenger: true,// i challenged them
+                            });
+                        }
+                    }// else, do nothing
                 },
 
                 SwarmEvent::Behaviour(MyBehaviourEvent::Rendezvous(
@@ -717,6 +843,163 @@ async fn run_tui(
                                 continue;
                             }
                             rend.seeking_peers.push(peer_id);// add peers seeking peers to the list (super cool patern matching!!)
+                        }
+                    }
+                    
+                }
+
+                    // game logic stuff
+                // incoming request
+                SwarmEvent::Behaviour(MyBehaviourEvent::Battleship(
+                    request_response::Event::Message {
+                        peer,
+                        message: request_response::Message::Request { request, channel, .. },
+                        ..
+                    }
+                )) => {
+                    let msg = BattleshipRequest::decode(request.as_slice()).unwrap();
+
+                    match msg {
+                        // challengers board is ready
+                        BattleshipRequest {msg: Some(msg)} => {
+                            match msg {
+                                // board setup
+                                BattleShip::battleship_request::Msg::BoardReady(BoardReady) => {
+                                    if let GameState::BUILD(build) = &mut state.game_state {
+                                        if build.board_ready {// send BoardAck
+                                            let response = BattleshipResponse { msg: Some(battleship_response::Msg::BoardAck(BoardAck {  })) };
+                                            let mut buf = vec![];
+                                            response.encode(&mut buf)?;
+                                            swarm.behaviour_mut().battleship.send_response(channel, buf);
+
+                                            // change state to battle
+                                            state.game_state = GameState::BATTLE(BattleState {
+                                                opponent_peer_id: build.opponent_peer_id,
+                                                opponent_nickname: build.opponent_nickname.clone(),
+                                                my_board: build.my_board,
+                                                their_board: [[false;10];10],
+                                                my_shots: [[false;10];10],
+                                                their_shots: [[false;10];10],
+                                                my_turn: false,
+                                                shot_seq: 0,
+                                                phase: BattlePhase::WaitingForOpponent,
+                                                cursor: build.cursor,
+                                                am_challenger: false,
+                                                pening_shot: None,
+                                            })
+                                        }
+                                    }
+                                }
+
+                                // recv a shot
+                                BattleShip::battleship_request::Msg::Shot(shot) => {
+                                    if let GameState::BATTLE(battle) = &mut state.game_state {
+                                        battle.phase = BattlePhase::MyTurn;
+                                        battle.shot_seq = shot.seq + 1;
+                                        
+                                        battle.their_shots[shot.row as usize][shot.col as usize] = true;
+                                        
+                                        // checkif the shot was a hit
+                                        if battle.my_board[shot.row as usize][shot.col as usize] {
+                                            
+                                            // it hit
+                                            // set this cell to false so it cant be hit again
+                                            battle.my_board[shot.row as usize][shot.col as usize] = false;
+
+                                            // was this ship sunk?
+                                            // FUUUUUUUUCK gotta re-write the whole jit
+
+                                            // did i just lose?
+                                            let mut am_alive: bool = false;
+                                            for r in battle.my_board.iter() {
+                                                for c in r.iter() {
+                                                    if *c {
+                                                        am_alive = true;
+                                                        break;
+                                                    }
+                                                }
+                                                if am_alive {
+                                                    break;
+                                                }
+                                            }
+
+                                            // send hit response
+                                            let response = BattleshipResponse {msg: Some(battleship_response::Msg::ShotResult(ShotResult{
+                                                seq: battle.shot_seq,
+                                                hit: true,
+                                                sunk: false,
+                                                won: !am_alive,
+                                            }))};
+                                            let mut buf = vec![];
+                                            response.encode(&mut buf);
+                                            swarm.behaviour_mut().battleship.send_response(channel, buf);
+
+
+                                        } else {
+                                            // send hit response
+                                            let response = BattleshipResponse {msg: Some(battleship_response::Msg::ShotResult(ShotResult{
+                                                seq: battle.shot_seq,
+                                                hit: false,
+                                                sunk: false,
+                                                won: false
+                                            }))};
+                                            let mut buf = vec![];
+                                            response.encode(&mut buf);
+                                            swarm.behaviour_mut().battleship.send_response(channel, buf);
+
+                                        }
+                                    }
+                                }
+
+                                _ => {}
+                            }
+                            
+                        }
+
+                        _ => {}
+                    }
+
+                }
+                // icoming response
+                SwarmEvent::Behaviour(MyBehaviourEvent::Battleship(
+                    request_response::Event::Message {
+                        peer,
+                        message: request_response::Message::Response {
+                            response,
+                            ..},
+                        ..
+                    }
+                )) => {
+                    if let GameState::BATTLE(battle) = &mut state.game_state {
+                        let msg = BattleshipResponse::decode(response.as_slice()).unwrap();
+                        match msg {
+                            BattleshipResponse { msg: Some(req) } => {
+                                match req {
+                                    BattleShip::battleship_response::Msg::ShotResult(ShotResult {
+                                        seq,
+                                        hit,
+                                        sunk,
+                                        won
+                                    }) => {
+                                        // shot result received
+                                        if let Some([row, col]) = battle.pening_shot.take() {
+                                            battle.my_shots[row][col] = true;
+                                            if hit {
+                                                battle.their_board[row][col] = true;
+                                            }
+                                            if won {
+                                                // i just won
+                                                todo!();
+                                            }
+                                        }
+                                        battle.shot_seq = seq;
+                                        battle.phase = BattlePhase::WaitingForOpponent;
+                                    }
+
+                                    _ => {}
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     
@@ -755,43 +1038,47 @@ fn safe_exit(swarm: &mut libp2p::Swarm<MyBehaviour>, state: &mut AppState) {
 
 fn is_place_possible(state: &BuildState) -> bool {
 
+    if state.current_ship == Ship::None {
+        return false;
+    }
+
     fn collision(board: [[bool;10];10], here: [i32;2], direction: &QuadDirection, len: usize) -> bool {
-        let mut tmp: [[bool;10];10] = [[false;10];10];
         match direction {
             QuadDirection::UP => {
                 for i in 0..len {
-                    let here2: [i32;2] = [here[0], here[1] - 1];
-                    if board[here2[0] as usize][here2[1] as usize] {
+                    let row = here[1] - i as i32;
+                    let col = here[0];
+                    if board[row as usize][col as usize] {
                         return true;
                     }
                 }
                 false
             }
-
-            QuadDirection::RIGHT => {
-                for i in 0..len {
-                    let here2: [i32;2] = [here[0] + 1, here[1]];
-                    if board[here2[0] as usize][here2[1] as usize] {
-                        return true;
-                    }
-                }
-                false
-            }
-
             QuadDirection::DOWN => {
                 for i in 0..len {
-                    let here2: [i32;2] = [here[0], here[1] + 1];
-                    if board[here2[0] as usize][here2[1] as usize] {
+                    let row = here[1] + i as i32;
+                    let col = here[0];
+                    if board[row as usize][col as usize] {
                         return true;
                     }
                 }
                 false
             }
-
+            QuadDirection::RIGHT => {
+                for i in 0..len {
+                    let row = here[1];
+                    let col = here[0] + i as i32;
+                    if board[row as usize][col as usize] {
+                        return true;
+                    }
+                }
+                false
+            }
             QuadDirection::LEFT => {
                 for i in 0..len {
-                    let here2: [i32;2] = [here[0] - 1, here[1]];
-                    if board[here2[0] as usize][here2[1] as usize] {
+                    let row = here[1];
+                    let col = here[0] - i as i32;
+                    if board[row as usize][col as usize] {
                         return true;
                     }
                 }
@@ -803,22 +1090,22 @@ fn is_place_possible(state: &BuildState) -> bool {
     fn out_of_bounds(here: [i32;2], direction: &QuadDirection, len: usize) -> bool {
         match direction {
             QuadDirection::UP => {
-                here[1] - (len as i32) < 0
+                here[1] - (len as i32 - 1) < 0
             }
             QuadDirection::RIGHT => {
-                here[0] + (len as i32) > 9
+                here[0] + (len as i32 - 1) > 9
             }
             QuadDirection::DOWN => {
-                here[0] + (len as i32) > 9
+                here[1] + (len as i32 - 1) > 9
             }
             QuadDirection::LEFT => {
-                here[0] - (len as i32) < 0
+                here[0] - (len as i32 - 1) < 0
             }
         }
     }
 
-    return out_of_bounds(state.cursor, &state.placing_cursor, state.current_ship.length() as usize)
-            || collision(state.my_board, state.cursor, &state.placing_cursor, state.current_ship.length() as usize);
+    return !(out_of_bounds(state.cursor, &state.placing_cursor, state.current_ship.length() as usize)
+            || collision(state.my_board, state.cursor, &state.placing_cursor, state.current_ship.length() as usize));
 
 }
 
@@ -909,9 +1196,6 @@ fn draw_ui(frame: &mut Frame, state: &mut AppState) {
 
 }
 
-fn draw_battle(frame: &mut Frame, state: &mut AppState) {
-    todo!();
-}
 
 fn draw_ren(frame: &mut Frame, state: &mut AppState) {
     if let GameState::RENDEZVOUS(rend) = &mut state.game_state {
@@ -1007,9 +1291,31 @@ fn draw_build(frame: &mut Frame, state: &mut AppState) {
     
 }
 
+
+fn draw_battle(frame: &mut Frame, state: &mut AppState) {
+    if let GameState::BATTLE(battle) = &state.game_state {
+        let (my_board_str, their_board_str) = draw_board_battle(&battle);
+
+        let my_board = Paragraph::new(my_board_str)
+            .block(Block::bordered().title("Your board"));
+        let their_board = Paragraph::new(their_board_str)
+            .block(Block::bordered().title("Their board"));
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Percentage(50),
+                Constraint::Percentage(50)
+            ])
+            .split(frame.area());
+
+        frame.render_widget(their_board, chunks[0]);
+        frame.render_widget(my_board, chunks[1]);
+
+    }
+}
+
 fn draw_board(state: &BuildState) -> String {
-    
-    
     let board_str: String = state.my_board.iter().enumerate().map(|(r, row)| {
         let row_str: String = row.iter().enumerate().map(|(c, cell)| {
             if state.is_placing {
@@ -1057,6 +1363,42 @@ fn draw_board(state: &BuildState) -> String {
 
     return board_str;
     
+}
+
+fn draw_board_battle(state: &BattleState) -> (String, String) {
+    let my_board_str: String = state.my_board.iter().enumerate().map(|(r, row)| {
+        let row_str: String = row.iter().enumerate().map(|(c, cell)| {
+            if state.their_shots[r][c] {
+                "[O]".to_string()
+            }
+            else if (*cell) {
+                "[X]".to_string()
+            } else {
+                "[ ]".to_string()
+            }
+        }).collect();
+        row_str + "\n"
+    }).collect();
+
+    let their_board_str: String = state.my_shots.iter().enumerate().map(|(r, row)| {
+        let row_str: String = row.iter().enumerate().map(|(c, cell)| {
+            if r == state.cursor[1] as usize && c == state.cursor[0] as usize {
+                "[+]".to_string()
+            }
+            else if state.their_board[r][c] && *cell {
+                "[X]".to_string()
+            }
+            else if *cell {
+                "[O]".to_string()
+            }
+            else {
+                "[ ]".to_string()
+            }
+        }).collect();
+        row_str + "\n"
+    }).collect();
+
+    return (my_board_str, their_board_str);
 }
 
 #[tokio::main]
