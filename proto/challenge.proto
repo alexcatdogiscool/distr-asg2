@@ -1,39 +1,49 @@
 syntax = "proto3";
 package peerboard.challenge.v1;
+
 // ── Handshake (protocol: /peerboard/challenge/1.0.0) ──────────────
+
 message ChallengePropose { string nickname = 1; }
 message ChallengeResponse { bool accepted = 1; }
+
 // ── In-game (protocol: /peerboard/battleship/1.0.0) ──────────────
+
 //
 // Every request and response is wrapped in an envelope so the
 // receiver always knows which message type has arrived.
+
 message BattleshipRequest {
- oneof msg {
-BoardReady board_ready = 1;
-Shot shot = 2;
-Resign resign = 3;
- }
+    oneof msg {
+        BoardReady board_ready = 1;
+        Shot shot = 2;
+        Resign resign = 3;
+    }
 }
+
 message BattleshipResponse {
- oneof msg {
-BoardAck board_ack = 1;
-ShotResult shot_result = 2;
-ResignAck resign_ack = 3;
- }
+    oneof msg {
+        BoardAck board_ack = 1;
+        ShotResult shot_result = 2;
+        ResignAck resign_ack = 3;
+    }
 }
+
 // Sent by each player once ships are placed. Ship positions stay private.
+
 message BoardReady {}
 message BoardAck {}
 message Shot {
- uint32 seq = 1; // shot number, starting at 1
- uint32 col = 2; // 0–9, left to right
- uint32 row = 3; // 0–9, top to bottom
+    uint32 seq = 1; // shot number, starting at 1
+    uint32 col = 2; // 0–9, left to right
+    uint32 row = 3; // 0–9, top to bottom
 }
+
 message ShotResult {
- uint32 seq = 1;
- bool hit = 2; // true if a ship occupies this cell
- bool sunk = 3; // true if this shot sank a ship entirely
- bool won = 4; // true if this was the last surviving ship cell
+    uint32 seq = 1;
+    bool hit = 2; // true if a ship occupies this cell
+    bool sunk = 3; // true if this shot sank a ship entirely
+    bool won = 4; // true if this was the last surviving ship cell
 }
+
 message Resign {}
 message ResignAck {}

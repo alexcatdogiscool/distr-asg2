@@ -1,0 +1,20 @@
+		battleship
+BoardReady - BoardAck for BOTH peers
+add ship types to board
+	so i can tell when one has sunk
+resign midway through
+30 second timeout
+resign when i lose
+unsub from rendezvous when i enter a game
+shot result exchange
+turn ownership better enforced
+shot seq number correct
+out of range shot -> resign
+
+		messaging
+be able to unsub from topics
+nickname from cli
+
+		General
+auto rebootstrap when routing table < 3 peers
+silently drop messages

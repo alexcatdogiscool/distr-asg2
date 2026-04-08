@@ -277,6 +277,7 @@ struct AppState {
     selected_area: u8, // 0 is the left area, 1 is the right area
     peer_counts: std::collections::HashMap<String, usize>,
     game_state: GameState,
+    exit: bool,
 
 }
 
@@ -311,703 +312,716 @@ async fn run_tui(
     // load all messages from the db
     state.messages = load_messages(conn, &state.current_topic);
 
+    let mut draw_interval = tokio::time::interval(Duration::from_millis(50));
 
-    loop {
 
-        // draw the tui
-        terminal.draw(|frame| {
+    while !state.exit {
 
-            match &mut state.game_state {
-                GameState::MESSAGE => {
-                    draw_ui(frame, state);
-                }
-                GameState::RENDEZVOUS(rend) => {
-                    draw_ren(frame, state);
-                }
-                GameState::BATTLE(battle) => {
-                    draw_battle(frame, state);
-                }
-                GameState::ACCEPT(acpt) => {
-                    draw_proposition(frame, state);
-                }
-                GameState::BUILD(build) => {
-                    draw_build(frame, state);
-                }
-            };
-            
-        })?;
+        tokio::select! {
+            _ = draw_interval.tick() => {
+                // draw the tui
+                terminal.draw(|frame| {
 
-        // handle inputs
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-
-                match &mut state.game_state {
-                    // messaging
-                    GameState::MESSAGE => {
-                        match key.code {
-                            KeyCode::Enter => {
-                                if state.selected_area == 1 {
-                                    // send the message!
-                                    let now = std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap()
-                                        .as_secs() as i64;
-
-                                    let msg = PeerBoardMessage {
-                                        peer_id: swarm.local_peer_id().to_string(),
-                                        topic: state.current_topic.clone(),
-                                        content: state.msg_buffer.clone(),
-                                        timestamp: now,
-                                        message_id: Uuid::new_v4().to_string(),
-                                        nickname: "alex".to_string(),
-                                    };
-
-                                    // check the message for validity
-                                    if (check_msg(&msg)) {
-                                        let mut buf = Vec::new();
-                                        msg.encode(&mut buf).unwrap();
-                                        // construct the topic
-                                        let topic = gossipsub::IdentTopic::new(&state.current_topic);
-                                        // send it out!
-                                        match swarm.behaviour_mut().gossipsub.publish(topic, buf) {
-                                            Ok(_) => {},
-                                            Err(gossipsub::PublishError::NoPeersSubscribedToTopic) => {},// dont care!
-                                            Err(e) => return Err(e.into()),
-                                        }
-
-                                        // add it to the db
-                                        conn.execute(
-                                            "INSERT INTO msgs (peer_id, topic, content, timestamp, message_id, nickname)
-                                            VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                                        (msg.peer_id, msg.topic, msg.content, msg.timestamp, msg.message_id, msg.nickname),
-                                        ).expect("couldnt add msg to the db");
-                                        // clear the input buffer
-                                        state.msg_buffer.clear();
-                                        // update the states msgs'
-                                        state.messages = load_messages(conn, &state.current_topic);
-                                    }
-                                }
-                                else {
-                                    // sub to the new topic.
-                                    // stay subbed to the previous topic.
-                                    // this is a design choice, so you can have 2 coversations in different topics at the same time.
-                                    // unsubbing only happens when the app closes (neccasarily)
-
-                                    // use can type "/rendezvous" to go to the rendezvous area
-
-                                    if state.topic_buffer.eq("/rendezvous") {
-                                        state.game_state = GameState::RENDEZVOUS(RendezvousState { seeking_peers: vec![], refresh: false, selected: None });
-                                        // register to the rendezvous node
-                                        swarm.behaviour_mut().rendezvous.register(
-                                            libp2p::rendezvous::Namespace::new("peerboard/challenge/seeking".to_string()).unwrap(),
-                                            BOOTSTRAP_PEER_ID.parse().unwrap(),
-                                            None
-                                        )?;
-                                        // get initial list of seeking peers
-                                        swarm.behaviour_mut().rendezvous.discover(
-                                            Some(libp2p::rendezvous::Namespace::new("peerboard/challenge/seeking".to_string()).unwrap()),
-                                            None,
-                                            None,
-                                            BOOTSTRAP_PEER_ID.parse().unwrap()
-                                        );
-
-                                    }
-                                    else {
-                                        let topic_str = format!("peerboard/v1/{}", state.topic_buffer.clone());
-                                        let new_topic = gossipsub::IdentTopic::new(topic_str.clone());
-                                        swarm.behaviour_mut().gossipsub.subscribe(&new_topic)?;
-                                        if (!(state.recent_topics.contains(&topic_str))) {
-                                            state.recent_topics.push(topic_str.clone());
-                                        }
-                                        state.current_topic = topic_str.clone();
-                                        
-
-                                        // update the messages buffer too
-                                        state.messages = load_messages(conn, &state.current_topic);
-                                    }
-                                    // so many evil nested if's >:(
-                                    state.topic_buffer.clear();// clear buffer in all cases
-                                    
-
-                                }
-                            },
-
-                            KeyCode::Char(c) => {// add it to buffer
-                                if state.selected_area == 1 {
-                                    state.msg_buffer.push(c);
-                                } else {
-                                    state.topic_buffer.push(c);
-                                }
-                                
-                            },
-
-                            KeyCode::Backspace => {//remove latest from buffer
-                                if state.selected_area == 1 {
-                                    state.msg_buffer.pop();
-                                } else {
-                                state.topic_buffer.pop();
-                                }
-                            },
-
-                            KeyCode::Up => {// change selected area
-                                state.selected_area = 0;
-                            }
-
-                            KeyCode::Down => {// change selected area
-                                state.selected_area = 1;
-                            }
-
-                            
-
-                            KeyCode::Esc => {
-                                safe_exit(swarm, state);
-                                break;
-                            },// close da app!
-
-                            _ => {}
+                    match &mut state.game_state {
+                        GameState::MESSAGE => {
+                            draw_ui(frame, state);
                         }
-                        
-                    }
-                    // battle
-                    GameState::BATTLE(battle) => {
-                        match key.code {
-                            KeyCode::Up => {
-                                battle.cursor[1] = 0.max(battle.cursor[1] - 1);
-                            }
-                            KeyCode::Down => {
-                                battle.cursor[1] = 9.min(battle.cursor[1] + 1);
-                            }
-                            KeyCode::Left => {
-                                battle.cursor[0] = 0.max(battle.cursor[0] - 1);
-                            }
-                            KeyCode::Right => {
-                                battle.cursor[0] = 9.min(battle.cursor[0] + 1);
-                            }
-
-                            
-                            KeyCode::Enter => {
-                                if battle.phase == BattlePhase::MyTurn {//fire a shot
-                                    battle.pening_shot = Some([battle.cursor[1] as usize, battle.cursor[0] as usize]);
-                                    //battle.my_shots[battle.cursor[1] as usize][battle.cursor[0] as usize] = true;
-                                    battle.phase = BattlePhase::WaitingForOpponent;
-
-                                    // send the req and wait for response
-                                    let request = BattleshipRequest{ msg: Some(battleship_request::Msg::Shot(Shot {
-                                        seq: battle.shot_seq,
-                                        col: battle.cursor[0] as u32,
-                                        row: battle.cursor[1] as u32
-                                    })) };
-                                    let mut buf = vec![];
-                                    request.encode(&mut buf);
-                                    swarm.behaviour_mut().battleship.send_request(&battle.opponent_peer_id, buf);
-
-                                }// ese do nothing
-                            }
-
-                            KeyCode::Esc => {
-                                safe_exit(swarm, state);
-                                break;
-                            }
-
-                            _ => {}
+                        GameState::RENDEZVOUS(rend) => {
+                            draw_ren(frame, state);
                         }
-                    }
-
-                    GameState::RENDEZVOUS(rend) => {
-                        if rend.refresh {
-                            // refresh the list
-                            swarm.behaviour_mut().rendezvous.discover(
-                                Some(libp2p::rendezvous::Namespace::new("peerboard/challenge/seeking".to_string()).unwrap()),
-                                None,
-                                None,
-                                BOOTSTRAP_PEER_ID.parse().unwrap()
-                            );
-                            rend.refresh = false;
+                        GameState::BATTLE(battle) => {
+                            draw_battle(frame, state);
                         }
-                        match key.code {
-                            KeyCode::Char('r') => {
-                                rend.refresh = true;
-                            },
-
-                            KeyCode::Down => {
-                                rend.selected  = Some((rend.seeking_peers.len()-1).min(rend.selected.unwrap_or(0) + 1));
-                            }
-                            KeyCode::Up => {
-                                if rend.selected.is_some() {
-                                    if rend.selected.unwrap() != 0 {
-                                        rend.selected = Some(rend.selected.unwrap() - 1);
-                                    }
-                                }
-                            }
-                            KeyCode::Enter => {
-                                if rend.selected.is_some() {
-                                    // send a battle request to the selected peer
-                                    let peer_id = rend.seeking_peers[rend.selected.unwrap()];
-
-                                    let propose = ChallengePropose{ nickname: "alex".to_string() };
-                                    let mut buf = vec![];
-                                    propose.encode(&mut buf).unwrap();
-                                    swarm.behaviour_mut().challenge.send_request(&peer_id, buf);
-
-                                }
-                            }
-                            
-
-                            KeyCode::Esc => {
-                                safe_exit(swarm, state);
-                                break;
-                            },// close da app!
-
-                            _ => {}
+                        GameState::ACCEPT(acpt) => {
+                            draw_proposition(frame, state);
                         }
-                    }
-
-                    GameState::ACCEPT(acpt) => {
-                        match key.code {
-                            KeyCode::Right => acpt.selected = false,
-                            KeyCode::Left => acpt.selected = true,
-
-                            KeyCode::Enter => {
-                                match acpt.selected {// silly to use a match here?? idk/
-                                    true => {
-                                        // accept. go to battle!
-                                        let respone = ChallengeResponse { accepted: true };
-                                        let mut buf = vec![];
-                                        respone.encode(&mut buf).unwrap();
-                                        swarm.behaviour_mut().challenge.send_response(acpt.channel.take().unwrap(), buf).unwrap();// ewwww .take()...
-                                        
-                                        state.game_state = GameState::BUILD(BuildState {
-                                            opponent_peer_id: acpt.peer.as_ref().unwrap().peer_id,
-                                            opponent_nickname: acpt.peer.as_ref().unwrap().nickname.clone(),// hell
-                                            my_board: [[false;10];10],
-                                            current_ship: Ship::CARRIER,
-                                            cursor: [0;2],
-                                            is_placing: false,
-                                            placing_cursor: QuadDirection::UP,
-                                            board_ready: false,
-                                            am_challenger: false,// i am accepting, i am not the challenger
-                                        });
-                                    }
-                                    false => {
-                                        // ignore, go back to rendezvous
-                                        let respone = ChallengeResponse { accepted: false };
-                                        let mut buf = vec![];
-                                        respone.encode(&mut buf).unwrap();
-                                        swarm.behaviour_mut().challenge.send_response(acpt.channel.take().unwrap(), buf).unwrap();// ewwww .take()...
-                                        state.game_state = GameState::RENDEZVOUS(acpt.rend_state.clone());// yuck
-                                    }
-                                }
-                            }
-
-                            _ => {}
-                            
+                        GameState::BUILD(build) => {
+                            draw_build(frame, state);
                         }
-                    }
+                    };
+                    
+                })?;
 
-                    GameState::BUILD(build) => {
+                while event::poll(Duration::from_millis(0))? {
+                    if let Event::Key(key) = event::read()? {
+                        // handle all the key presses
 
-                        match build.is_placing {
-                            false => {//moving cursor
+                        match &mut state.game_state {
+                            // messaging
+                            GameState::MESSAGE => {
                                 match key.code {
-
-                                    // cursor movement
-                                    KeyCode::Up => {
-                                        build.cursor[1] = 0.max(build.cursor[1] - 1);
-                                    }
-                                    KeyCode::Down => {
-                                        build.cursor[1] = 9.min(build.cursor[1] + 1);
-                                    }
-                                    KeyCode::Left => {
-                                        build.cursor[0] = 0.max(build.cursor[0] - 1);
-                                    }
-                                    KeyCode::Right => {
-                                        build.cursor[0] = 9.min(build.cursor[0] + 1);
-                                    }
-
                                     KeyCode::Enter => {
-                                        build.is_placing = true;
+                                        if state.selected_area == 1 {
+                                            // send the message!
+                                            let now = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .unwrap()
+                                                .as_secs() as i64;
+
+                                            let msg = PeerBoardMessage {
+                                                peer_id: swarm.local_peer_id().to_string(),
+                                                topic: state.current_topic.clone(),
+                                                content: state.msg_buffer.clone(),
+                                                timestamp: now,
+                                                message_id: Uuid::new_v4().to_string(),
+                                                nickname: "alex".to_string(),
+                                            };
+
+                                            // check the message for validity
+                                            if (check_msg(&msg)) {
+                                                let mut buf = Vec::new();
+                                                msg.encode(&mut buf).unwrap();
+                                                // construct the topic
+                                                let topic = gossipsub::IdentTopic::new(&state.current_topic);
+                                                // send it out!
+                                                match swarm.behaviour_mut().gossipsub.publish(topic, buf) {
+                                                    Ok(_) => {},
+                                                    Err(gossipsub::PublishError::NoPeersSubscribedToTopic) => {},// dont care!
+                                                    Err(e) => return Err(e.into()),
+                                                }
+
+                                                // add it to the db
+                                                conn.execute(
+                                                    "INSERT INTO msgs (peer_id, topic, content, timestamp, message_id, nickname)
+                                                    VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                                                (msg.peer_id, msg.topic, msg.content, msg.timestamp, msg.message_id, msg.nickname),
+                                                ).expect("couldnt add msg to the db");
+                                                // clear the input buffer
+                                                state.msg_buffer.clear();
+                                                // update the states msgs'
+                                                state.messages = load_messages(conn, &state.current_topic);
+                                            }
+                                        }
+                                        else {
+                                            // sub to the new topic.
+                                            // stay subbed to the previous topic.
+                                            // this is a design choice, so you can have 2 coversations in different topics at the same time.
+                                            // unsubbing only happens when the app closes (neccasarily)
+
+                                            // use can type "/rendezvous" to go to the rendezvous area
+
+                                            if state.topic_buffer.eq("/rendezvous") {
+                                                state.game_state = GameState::RENDEZVOUS(RendezvousState { seeking_peers: vec![], refresh: false, selected: None });
+                                                // register to the rendezvous node
+                                                swarm.behaviour_mut().rendezvous.register(
+                                                    libp2p::rendezvous::Namespace::new("peerboard/challenge/seeking".to_string()).unwrap(),
+                                                    BOOTSTRAP_PEER_ID.parse().unwrap(),
+                                                    None
+                                                )?;
+                                                // get initial list of seeking peers
+                                                swarm.behaviour_mut().rendezvous.discover(
+                                                    Some(libp2p::rendezvous::Namespace::new("peerboard/challenge/seeking".to_string()).unwrap()),
+                                                    None,
+                                                    None,
+                                                    BOOTSTRAP_PEER_ID.parse().unwrap()
+                                                );
+
+                                            }
+                                            else {
+                                                let topic_str = format!("peerboard/v1/{}", state.topic_buffer.clone());
+                                                let new_topic = gossipsub::IdentTopic::new(topic_str.clone());
+                                                swarm.behaviour_mut().gossipsub.subscribe(&new_topic)?;
+                                                if (!(state.recent_topics.contains(&topic_str))) {
+                                                    state.recent_topics.push(topic_str.clone());
+                                                }
+                                                state.current_topic = topic_str.clone();
+                                                
+
+                                                // update the messages buffer too
+                                                state.messages = load_messages(conn, &state.current_topic);
+                                            }
+                                            // so many evil nested if's >:(
+                                            state.topic_buffer.clear();// clear buffer in all cases
+                                            
+
+                                        }
+                                    },
+
+                                    KeyCode::Char(c) => {// add it to buffer
+                                        if state.selected_area == 1 {
+                                            state.msg_buffer.push(c);
+                                        } else {
+                                            state.topic_buffer.push(c);
+                                        }
+                                        
+                                    },
+
+                                    KeyCode::Backspace => {//remove latest from buffer
+                                        if state.selected_area == 1 {
+                                            state.msg_buffer.pop();
+                                        } else {
+                                        state.topic_buffer.pop();
+                                        }
+                                    },
+
+                                    KeyCode::Up => {// change selected area
+                                        state.selected_area = 0;
                                     }
-                                    
-                                    
+
+                                    KeyCode::Down => {// change selected area
+                                        state.selected_area = 1;
+                                    }
+
                                     
 
                                     KeyCode::Esc => {
                                         safe_exit(swarm, state);
                                         break;
-                                    }
-                                    _ => {},
+                                    },// close da app!
+
+                                    _ => {}
                                 }
+                                
                             }
-                            true => {// placing a peice
+                            // battle
+                            GameState::BATTLE(battle) => {
                                 match key.code {
-
-                                    KeyCode::Up => build.placing_cursor = QuadDirection::UP,
-                                    KeyCode::Down => build.placing_cursor = QuadDirection::DOWN,
-                                    KeyCode::Left => build.placing_cursor = QuadDirection::LEFT,
-                                    KeyCode::Right => build.placing_cursor = QuadDirection::RIGHT,
-
-                                    KeyCode::Backspace => {// dont place, go back
-                                        build.is_placing = false;
+                                    KeyCode::Up => {
+                                        battle.cursor[1] = 0.max(battle.cursor[1] - 1);
+                                    }
+                                    KeyCode::Down => {
+                                        battle.cursor[1] = 9.min(battle.cursor[1] + 1);
+                                    }
+                                    KeyCode::Left => {
+                                        battle.cursor[0] = 0.max(battle.cursor[0] - 1);
+                                    }
+                                    KeyCode::Right => {
+                                        battle.cursor[0] = 9.min(battle.cursor[0] + 1);
                                     }
 
-                                    KeyCode::Enter => {// place the peice here!
-                                        
-                                        if is_place_possible(&build) {
-                                            //place the jit
-                                            build.place();
-                                            build.is_placing = false;// in any case
-                                        }// else do nothing
-
-                                        // check if we just palced the last peice
-                                        // if so, go to the next state
-                                        if build.current_ship == Ship::None {
-                                            // set board_done to true
-                                            // when we recevie a BoardReady, send BoardAck
-                                            build.board_ready = true;
-                                        }
-                                        
-                                        
-
-                                    }
                                     
+                                    KeyCode::Enter => {
+                                        if battle.phase == BattlePhase::MyTurn {//fire a shot
+                                            battle.pening_shot = Some([battle.cursor[1] as usize, battle.cursor[0] as usize]);
+                                            //battle.my_shots[battle.cursor[1] as usize][battle.cursor[0] as usize] = true;
+                                            battle.phase = BattlePhase::WaitingForOpponent;
 
+                                            // send the req and wait for response
+                                            let request = BattleshipRequest{ msg: Some(battleship_request::Msg::Shot(Shot {
+                                                seq: battle.shot_seq,
+                                                col: battle.cursor[0] as u32,
+                                                row: battle.cursor[1] as u32
+                                            })) };
+                                            let mut buf = vec![];
+                                            request.encode(&mut buf);
+                                            swarm.behaviour_mut().battleship.send_request(&battle.opponent_peer_id, buf);
 
+                                        }// ese do nothing
+                                    }
 
-                                    _ => {
+                                    KeyCode::Esc => {
                                         safe_exit(swarm, state);
                                         break;
-                                    }
-                                }
-
-                            }
-                        }
-
-                        if build.board_ready {
-                            if build.am_challenger {
-                                // request BoardReady
-                                let request = BattleshipRequest { msg: Some(battleship_request::Msg::BoardReady(BoardReady {})) };// ???
-                                let mut buf = vec![];
-                                request.encode(&mut buf);
-                                swarm.behaviour_mut().battleship.send_request(&build.opponent_peer_id, buf);
-
-                                // move into battle state
-                                state.game_state = GameState::BATTLE(BattleState {
-                                    opponent_peer_id: build.opponent_peer_id,
-                                    opponent_nickname: build.opponent_nickname.clone(),
-                                    my_board: build.my_board,
-                                    their_board: [[false;10];10],
-                                    my_shots: [[false;10];10],
-                                    their_shots: [[false;10];10],
-                                    my_turn: true,
-                                    shot_seq: 0,
-                                    phase: BattlePhase::MyTurn,
-                                    cursor: build.cursor,
-                                    am_challenger: true,
-                                    pening_shot: None,
-                                });
-                            }// else wait for BoardReady request
-                        }
-
-                        
-                    }
-
-
-                    _ => {},
-                }
-
-                // batleship
-
-
-                // messaging
-                
-            }
-        }
-
-        // all swarm stuff
-        while let Poll::Ready((event)) = futures::poll!(swarm.select_next_some()) {
-            match event {
-                
-                // gossipsub listen
-                SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
-                    message,
-                    ..
-                    })) => {
-                        match PeerBoardMessage::decode(message.data.as_slice()) {
-                            Ok(msg) => {
-                                // check the message for validity
-                                if (check_msg(&msg)) {
-                                    // chgeck if it exists within the db v
-
-                                    let msg_exists: bool = conn
-                                        .query_row(
-                                            "SELECT COUNT(*) FROM msgs WHERE message_id = ?1",
-                                            [&msg.message_id],
-                                            |row| row.get::<_, i64>(0),
-                                        )
-                                        .unwrap_or(0) > 0;
-
-                                    if !msg_exists {
-                                        // valid good non duplicate message
-                                        // add it to the db
-                                        conn.execute(
-                                            "INSERT INTO msgs (peer_id, topic, content, timestamp, message_id, nickname)
-                                            VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                                        (msg.peer_id, msg.topic, msg.content, msg.timestamp, msg.message_id, msg.nickname),
-                                        ).expect("couldnt add msg to the db");
-                                        // add it toi the states msgs'
-                                        state.messages = load_messages(conn, &state.current_topic);
-                                    }
-                                }
-                            },                            
-                            Err(_e) => {},
-                        }
-                    },
-
-                SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Subscribed { peer_id, topic })) => {
-                    *state.peer_counts.entry(topic.to_string()).or_insert(0) += 1;
-                }
-
-                SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Unsubscribed { peer_id, topic })) => {
-                    *state.peer_counts.entry(topic.to_string()).or_insert(1) -= 1;
-                }
-
-                    //battleship stuff!
-                // someone challenged me
-                SwarmEvent::Behaviour(MyBehaviourEvent::Challenge(
-                    request_response::Event::Message {
-                        peer, message: request_response::Message::Request { request, channel, .. } ,
-                        ..
-                    }
-                )) => {
-
-                    if let GameState::RENDEZVOUS(rend) = &mut state.game_state {
-                        let propose = ChallengePropose::decode(request.as_slice()).unwrap();
-                        let other_peer = SimplePeer{ nickname: propose.nickname, peer_id: peer };
-                        state.game_state = GameState::ACCEPT(AcceptDecline { selected: false, peer: Some(other_peer), rend_state: rend.clone(), channel: Some(channel) } );
-                    }
-
-                    
-                    // accept or decline?
-                    //let respone = ChallengeResponse { accepted: true };
-                    //let mut buf = vec![];
-                    //respone.encode(&mut buf).unwrap();
-                    //swarm.behaviour_mut().challenge.send_response(channel, buf).unwrap();
-
-
-                    // check game state to see what to do eith this message
-                    if let GameState::BATTLE(battle) = &mut state.game_state {
-                        // we are in a game
-                        match request {
-
-                            _ => {}
-                        }
-                    }
-                    // in message state. ignore this
-                },
-
-                // someone trying to talk to me
-                SwarmEvent::Behaviour(MyBehaviourEvent::Challenge(
-                    request_response::Event::Message {
-                        peer,
-                        message: request_response::Message::Response { response, .. },
-                        ..
-                    }
-                )) => {
-                    let msg = ChallengeResponse::decode(response.as_slice()).unwrap();
-                    if msg.accepted {
-                        // someone accepted my challenge request
-                        if let GameState::RENDEZVOUS(rend) = &mut state.game_state {
-
-                            state.game_state = GameState::BUILD(BuildState {
-                                opponent_peer_id: peer,
-                                opponent_nickname: "idk".to_string(),
-                                my_board: [[false;10];10],
-                                current_ship: Ship::CARRIER,
-                                cursor: [0,0],
-                                is_placing: false,
-                                placing_cursor: QuadDirection::UP,
-                                board_ready: false,
-                                am_challenger: true,// i challenged them
-                            });
-                        }
-                    }// else, do nothing
-                },
-
-                SwarmEvent::Behaviour(MyBehaviourEvent::Rendezvous(
-                    libp2p::rendezvous::client::Event::Discovered { registrations, cookie, .. }
-                )) => {
-                    if let GameState::RENDEZVOUS(rend) = &mut state.game_state {
-                        for regs in registrations {
-                            let peer_id = regs.record.peer_id();
-                            if peer_id == *swarm.local_peer_id() {
-                                continue;
-                            }
-                            rend.seeking_peers.push(peer_id);// add peers seeking peers to the list (super cool patern matching!!)
-                        }
-                    }
-                    
-                }
-
-                    // game logic stuff
-                // incoming request
-                SwarmEvent::Behaviour(MyBehaviourEvent::Battleship(
-                    request_response::Event::Message {
-                        peer,
-                        message: request_response::Message::Request { request, channel, .. },
-                        ..
-                    }
-                )) => {
-                    let msg = BattleshipRequest::decode(request.as_slice()).unwrap();
-
-                    match msg {
-                        // challengers board is ready
-                        BattleshipRequest {msg: Some(msg)} => {
-                            match msg {
-                                // board setup
-                                BattleShip::battleship_request::Msg::BoardReady(BoardReady) => {
-                                    if let GameState::BUILD(build) = &mut state.game_state {
-                                        if build.board_ready {// send BoardAck
-                                            let response = BattleshipResponse { msg: Some(battleship_response::Msg::BoardAck(BoardAck {  })) };
-                                            let mut buf = vec![];
-                                            response.encode(&mut buf)?;
-                                            swarm.behaviour_mut().battleship.send_response(channel, buf);
-
-                                            // change state to battle
-                                            state.game_state = GameState::BATTLE(BattleState {
-                                                opponent_peer_id: build.opponent_peer_id,
-                                                opponent_nickname: build.opponent_nickname.clone(),
-                                                my_board: build.my_board,
-                                                their_board: [[false;10];10],
-                                                my_shots: [[false;10];10],
-                                                their_shots: [[false;10];10],
-                                                my_turn: false,
-                                                shot_seq: 0,
-                                                phase: BattlePhase::WaitingForOpponent,
-                                                cursor: build.cursor,
-                                                am_challenger: false,
-                                                pening_shot: None,
-                                            })
-                                        }
-                                    }
-                                }
-
-                                // recv a shot
-                                BattleShip::battleship_request::Msg::Shot(shot) => {
-                                    if let GameState::BATTLE(battle) = &mut state.game_state {
-                                        battle.phase = BattlePhase::MyTurn;
-                                        battle.shot_seq = shot.seq + 1;
-                                        
-                                        battle.their_shots[shot.row as usize][shot.col as usize] = true;
-                                        
-                                        // checkif the shot was a hit
-                                        if battle.my_board[shot.row as usize][shot.col as usize] {
-                                            
-                                            // it hit
-                                            // set this cell to false so it cant be hit again
-                                            battle.my_board[shot.row as usize][shot.col as usize] = false;
-
-                                            // was this ship sunk?
-                                            // FUUUUUUUUCK gotta re-write the whole jit
-
-                                            // did i just lose?
-                                            let mut am_alive: bool = false;
-                                            for r in battle.my_board.iter() {
-                                                for c in r.iter() {
-                                                    if *c {
-                                                        am_alive = true;
-                                                        break;
-                                                    }
-                                                }
-                                                if am_alive {
-                                                    break;
-                                                }
-                                            }
-
-                                            // send hit response
-                                            let response = BattleshipResponse {msg: Some(battleship_response::Msg::ShotResult(ShotResult{
-                                                seq: battle.shot_seq,
-                                                hit: true,
-                                                sunk: false,
-                                                won: !am_alive,
-                                            }))};
-                                            let mut buf = vec![];
-                                            response.encode(&mut buf);
-                                            swarm.behaviour_mut().battleship.send_response(channel, buf);
-
-
-                                        } else {
-                                            // send hit response
-                                            let response = BattleshipResponse {msg: Some(battleship_response::Msg::ShotResult(ShotResult{
-                                                seq: battle.shot_seq,
-                                                hit: false,
-                                                sunk: false,
-                                                won: false
-                                            }))};
-                                            let mut buf = vec![];
-                                            response.encode(&mut buf);
-                                            swarm.behaviour_mut().battleship.send_response(channel, buf);
-
-                                        }
-                                    }
-                                }
-
-                                _ => {}
-                            }
-                            
-                        }
-
-                        _ => {}
-                    }
-
-                }
-                // icoming response
-                SwarmEvent::Behaviour(MyBehaviourEvent::Battleship(
-                    request_response::Event::Message {
-                        peer,
-                        message: request_response::Message::Response {
-                            response,
-                            ..},
-                        ..
-                    }
-                )) => {
-                    if let GameState::BATTLE(battle) = &mut state.game_state {
-                        let msg = BattleshipResponse::decode(response.as_slice()).unwrap();
-                        match msg {
-                            BattleshipResponse { msg: Some(req) } => {
-                                match req {
-                                    BattleShip::battleship_response::Msg::ShotResult(ShotResult {
-                                        seq,
-                                        hit,
-                                        sunk,
-                                        won
-                                    }) => {
-                                        // shot result received
-                                        if let Some([row, col]) = battle.pening_shot.take() {
-                                            battle.my_shots[row][col] = true;
-                                            if hit {
-                                                battle.their_board[row][col] = true;
-                                            }
-                                            if won {
-                                                // i just won
-                                                todo!();
-                                            }
-                                        }
-                                        battle.shot_seq = seq;
-                                        battle.phase = BattlePhase::WaitingForOpponent;
                                     }
 
                                     _ => {}
                                 }
                             }
+
+                            GameState::RENDEZVOUS(rend) => {
+                                if rend.refresh {
+                                    // refresh the list
+                                    swarm.behaviour_mut().rendezvous.discover(
+                                        Some(libp2p::rendezvous::Namespace::new("peerboard/challenge/seeking".to_string()).unwrap()),
+                                        None,
+                                        None,
+                                        BOOTSTRAP_PEER_ID.parse().unwrap()
+                                    );
+                                    rend.refresh = false;
+                                }
+                                match key.code {
+                                    KeyCode::Char('r') => {
+                                        rend.refresh = true;
+                                    },
+
+                                    KeyCode::Down => {
+                                        rend.selected  = Some((rend.seeking_peers.len()-1).min(rend.selected.unwrap_or(0) + 1));
+                                    }
+                                    KeyCode::Up => {
+                                        if rend.selected.is_some() {
+                                            if rend.selected.unwrap() != 0 {
+                                                rend.selected = Some(rend.selected.unwrap() - 1);
+                                            }
+                                        }
+                                    }
+                                    KeyCode::Enter => {
+                                        if rend.selected.is_some() {
+                                            // send a battle request to the selected peer
+                                            let peer_id = rend.seeking_peers[rend.selected.unwrap()];
+
+                                            let propose = ChallengePropose{ nickname: "alex".to_string() };
+                                            let mut buf = vec![];
+                                            propose.encode(&mut buf).unwrap();
+                                            swarm.behaviour_mut().challenge.send_request(&peer_id, buf);
+
+                                        }
+                                    }
+                                    
+
+                                    KeyCode::Esc => {
+                                        safe_exit(swarm, state);
+                                        break;
+                                    },// close da app!
+
+                                    _ => {}
+                                }
+                            }
+
+                            GameState::ACCEPT(acpt) => {
+                                match key.code {
+                                    KeyCode::Right => acpt.selected = false,
+                                    KeyCode::Left => acpt.selected = true,
+
+                                    KeyCode::Enter => {
+                                        match acpt.selected {// silly to use a match here?? idk/
+                                            true => {
+                                                // accept. go to battle!
+                                                let respone = ChallengeResponse { accepted: true };
+                                                let mut buf = vec![];
+                                                respone.encode(&mut buf).unwrap();
+                                                swarm.behaviour_mut().challenge.send_response(acpt.channel.take().unwrap(), buf).unwrap();// ewwww .take()...
+                                                
+                                                state.game_state = GameState::BUILD(BuildState {
+                                                    opponent_peer_id: acpt.peer.as_ref().unwrap().peer_id,
+                                                    opponent_nickname: acpt.peer.as_ref().unwrap().nickname.clone(),// hell
+                                                    my_board: [[false;10];10],
+                                                    current_ship: Ship::CARRIER,
+                                                    cursor: [0;2],
+                                                    is_placing: false,
+                                                    placing_cursor: QuadDirection::UP,
+                                                    board_ready: false,
+                                                    am_challenger: false,// i am accepting, i am not the challenger
+                                                });
+                                            }
+                                            false => {
+                                                // ignore, go back to rendezvous
+                                                let respone = ChallengeResponse { accepted: false };
+                                                let mut buf = vec![];
+                                                respone.encode(&mut buf).unwrap();
+                                                swarm.behaviour_mut().challenge.send_response(acpt.channel.take().unwrap(), buf).unwrap();// ewwww .take()...
+                                                state.game_state = GameState::RENDEZVOUS(acpt.rend_state.clone());// yuck
+                                            }
+                                        }
+                                    }
+
+                                    _ => {}
+                                    
+                                }
+                            }
+
+                            GameState::BUILD(build) => {
+
+                                match build.is_placing {
+                                    false => {//moving cursor
+                                        match key.code {
+
+                                            // cursor movement
+                                            KeyCode::Up => {
+                                                build.cursor[1] = 0.max(build.cursor[1] - 1);
+                                            }
+                                            KeyCode::Down => {
+                                                build.cursor[1] = 9.min(build.cursor[1] + 1);
+                                            }
+                                            KeyCode::Left => {
+                                                build.cursor[0] = 0.max(build.cursor[0] - 1);
+                                            }
+                                            KeyCode::Right => {
+                                                build.cursor[0] = 9.min(build.cursor[0] + 1);
+                                            }
+
+                                            KeyCode::Enter => {
+                                                build.is_placing = true;
+                                            }
+                                            
+                                            
+                                            
+
+                                            KeyCode::Esc => {
+                                                safe_exit(swarm, state);
+                                                break;
+                                            }
+                                            _ => {},
+                                        }
+                                    }
+                                    true => {// placing a peice
+                                        match key.code {
+
+                                            KeyCode::Up => build.placing_cursor = QuadDirection::UP,
+                                            KeyCode::Down => build.placing_cursor = QuadDirection::DOWN,
+                                            KeyCode::Left => build.placing_cursor = QuadDirection::LEFT,
+                                            KeyCode::Right => build.placing_cursor = QuadDirection::RIGHT,
+
+                                            KeyCode::Backspace => {// dont place, go back
+                                                build.is_placing = false;
+                                            }
+
+                                            KeyCode::Enter => {// place the peice here!
+                                                
+                                                if is_place_possible(&build) {
+                                                    //place the jit
+                                                    build.place();
+                                                    build.is_placing = false;// in any case
+                                                }// else do nothing
+
+                                                // check if we just palced the last peice
+                                                // if so, go to the next state
+                                                if build.current_ship == Ship::None {
+                                                    // set board_done to true
+                                                    // when we recevie a BoardReady, send BoardAck
+                                                    build.board_ready = true;
+                                                }
+                                                
+                                                
+
+                                            }
+                                            
+
+
+
+                                            KeyCode::Esc => {
+                                                safe_exit(swarm, state);
+                                                
+                                                break;
+                                            }
+
+                                            _ => {}
+                                        }
+
+                                    }
+                                }
+
+                                if build.board_ready {
+                                    if build.am_challenger {
+                                        // request BoardReady
+                                        let request = BattleshipRequest { msg: Some(battleship_request::Msg::BoardReady(BoardReady {})) };// ???
+                                        let mut buf = vec![];
+                                        request.encode(&mut buf);
+                                        swarm.behaviour_mut().battleship.send_request(&build.opponent_peer_id, buf);
+
+                                        // move into battle state
+                                        state.game_state = GameState::BATTLE(BattleState {
+                                            opponent_peer_id: build.opponent_peer_id,
+                                            opponent_nickname: build.opponent_nickname.clone(),
+                                            my_board: build.my_board,
+                                            their_board: [[false;10];10],
+                                            my_shots: [[false;10];10],
+                                            their_shots: [[false;10];10],
+                                            my_turn: true,
+                                            shot_seq: 0,
+                                            phase: BattlePhase::MyTurn,
+                                            cursor: build.cursor,
+                                            am_challenger: true,
+                                            pening_shot: None,
+                                        });
+                                    }// else wait for BoardReady request
+                                }
+
+                                
+                            }
+
+
+                            _ => {},
+                        }
+
+                        // batleship
+
+
+                        // messaging
+                        
+                    
+                    }
+                }
+            }
+
+            // all swarm stuff
+            event = swarm.select_next_some() => {
+                match event {
+                    
+                    // gossipsub listen
+                    SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
+                        message,
+                        ..
+                        })) => {
+                            match PeerBoardMessage::decode(message.data.as_slice()) {
+                                Ok(msg) => {
+                                    // check the message for validity
+                                    if (check_msg(&msg)) {
+                                        // chgeck if it exists within the db v
+
+                                        let msg_exists: bool = conn
+                                            .query_row(
+                                                "SELECT COUNT(*) FROM msgs WHERE message_id = ?1",
+                                                [&msg.message_id],
+                                                |row| row.get::<_, i64>(0),
+                                            )
+                                            .unwrap_or(0) > 0;
+
+                                        if !msg_exists {
+                                            // valid good non duplicate message
+                                            // add it to the db
+                                            conn.execute(
+                                                "INSERT INTO msgs (peer_id, topic, content, timestamp, message_id, nickname)
+                                                VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                                            (msg.peer_id, msg.topic, msg.content, msg.timestamp, msg.message_id, msg.nickname),
+                                            ).expect("couldnt add msg to the db");
+                                            // add it toi the states msgs'
+                                            state.messages = load_messages(conn, &state.current_topic);
+                                        }
+                                    }
+                                },                            
+                                Err(_e) => {},
+                            }
+                        },
+
+                    SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Subscribed { peer_id, topic })) => {
+                        *state.peer_counts.entry(topic.to_string()).or_insert(0) += 1;
+                    }
+
+                    SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Unsubscribed { peer_id, topic })) => {
+                        *state.peer_counts.entry(topic.to_string()).or_insert(1) -= 1;
+                    }
+
+                        //battleship stuff!
+                    // someone challenged me
+                    SwarmEvent::Behaviour(MyBehaviourEvent::Challenge(
+                        request_response::Event::Message {
+                            peer, message: request_response::Message::Request { request, channel, .. } ,
+                            ..
+                        }
+                    )) => {
+
+                        if let GameState::RENDEZVOUS(rend) = &mut state.game_state {
+                            let propose = ChallengePropose::decode(request.as_slice()).unwrap();
+                            let other_peer = SimplePeer{ nickname: propose.nickname, peer_id: peer };
+                            state.game_state = GameState::ACCEPT(AcceptDecline { selected: false, peer: Some(other_peer), rend_state: rend.clone(), channel: Some(channel) } );
+                        }
+
+                        
+                        // accept or decline?
+                        //let respone = ChallengeResponse { accepted: true };
+                        //let mut buf = vec![];
+                        //respone.encode(&mut buf).unwrap();
+                        //swarm.behaviour_mut().challenge.send_response(channel, buf).unwrap();
+
+
+                        // check game state to see what to do eith this message
+                        if let GameState::BATTLE(battle) = &mut state.game_state {
+                            // we are in a game
+                            match request {
+
+                                _ => {}
+                            }
+                        }
+                        // in message state. ignore this
+                    },
+
+                    // someone trying to talk to me
+                    SwarmEvent::Behaviour(MyBehaviourEvent::Challenge(
+                        request_response::Event::Message {
+                            peer,
+                            message: request_response::Message::Response { response, .. },
+                            ..
+                        }
+                    )) => {
+                        let msg = ChallengeResponse::decode(response.as_slice()).unwrap();
+                        if msg.accepted {
+                            // someone accepted my challenge request
+                            if let GameState::RENDEZVOUS(rend) = &mut state.game_state {
+
+                                state.game_state = GameState::BUILD(BuildState {
+                                    opponent_peer_id: peer,
+                                    opponent_nickname: "idk".to_string(),
+                                    my_board: [[false;10];10],
+                                    current_ship: Ship::CARRIER,
+                                    cursor: [0,0],
+                                    is_placing: false,
+                                    placing_cursor: QuadDirection::UP,
+                                    board_ready: false,
+                                    am_challenger: true,// i challenged them
+                                });
+                            }
+                        }// else, do nothing
+                    },
+
+                    SwarmEvent::Behaviour(MyBehaviourEvent::Rendezvous(
+                        libp2p::rendezvous::client::Event::Discovered { registrations, cookie, .. }
+                    )) => {
+                        if let GameState::RENDEZVOUS(rend) = &mut state.game_state {
+                            for regs in registrations {
+                                let peer_id = regs.record.peer_id();
+                                if peer_id == *swarm.local_peer_id() {
+                                    continue;
+                                }
+                                rend.seeking_peers.push(peer_id);// add peers seeking peers to the list (super cool patern matching!!)
+                            }
+                        }
+                        
+                    }
+
+                        // game logic stuff
+                    // incoming request
+                    SwarmEvent::Behaviour(MyBehaviourEvent::Battleship(
+                        request_response::Event::Message {
+                            peer,
+                            message: request_response::Message::Request { request, channel, .. },
+                            ..
+                        }
+                    )) => {
+                        let msg = BattleshipRequest::decode(request.as_slice()).unwrap();
+
+                        match msg {
+                            // challengers board is ready
+                            BattleshipRequest {msg: Some(msg)} => {
+                                match msg {
+                                    // board setup
+                                    BattleShip::battleship_request::Msg::BoardReady(BoardReady) => {
+                                        if let GameState::BUILD(build) = &mut state.game_state {
+                                            if build.board_ready {// send BoardAck
+                                                let response = BattleshipResponse { msg: Some(battleship_response::Msg::BoardAck(BoardAck {  })) };
+                                                let mut buf = vec![];
+                                                response.encode(&mut buf)?;
+                                                swarm.behaviour_mut().battleship.send_response(channel, buf);
+
+                                                // change state to battle
+                                                state.game_state = GameState::BATTLE(BattleState {
+                                                    opponent_peer_id: build.opponent_peer_id,
+                                                    opponent_nickname: build.opponent_nickname.clone(),
+                                                    my_board: build.my_board,
+                                                    their_board: [[false;10];10],
+                                                    my_shots: [[false;10];10],
+                                                    their_shots: [[false;10];10],
+                                                    my_turn: false,
+                                                    shot_seq: 0,
+                                                    phase: BattlePhase::WaitingForOpponent,
+                                                    cursor: build.cursor,
+                                                    am_challenger: false,
+                                                    pening_shot: None,
+                                                })
+                                            }
+                                        }
+                                    }
+
+                                    // recv a shot
+                                    BattleShip::battleship_request::Msg::Shot(shot) => {
+                                        if let GameState::BATTLE(battle) = &mut state.game_state {
+                                            battle.phase = BattlePhase::MyTurn;
+                                            battle.shot_seq = shot.seq + 1;
+                                            
+                                            battle.their_shots[shot.row as usize][shot.col as usize] = true;
+                                            
+                                            // checkif the shot was a hit
+                                            if battle.my_board[shot.row as usize][shot.col as usize] {
+                                                
+                                                // it hit
+                                                // set this cell to false so it cant be hit again
+                                                battle.my_board[shot.row as usize][shot.col as usize] = false;
+
+                                                // was this ship sunk?
+                                                // FUUUUUUUUCK gotta re-write the whole jit
+
+                                                // did i just lose?
+                                                let mut am_alive: bool = false;
+                                                for r in battle.my_board.iter() {
+                                                    for c in r.iter() {
+                                                        if *c {
+                                                            am_alive = true;
+                                                            break;
+                                                        }
+                                                    }
+                                                    if am_alive {
+                                                        break;
+                                                    }
+                                                }
+
+                                                // send hit response
+                                                let response = BattleshipResponse {msg: Some(battleship_response::Msg::ShotResult(ShotResult{
+                                                    seq: battle.shot_seq,
+                                                    hit: true,
+                                                    sunk: false,
+                                                    won: !am_alive,
+                                                }))};
+                                                let mut buf = vec![];
+                                                response.encode(&mut buf);
+                                                swarm.behaviour_mut().battleship.send_response(channel, buf);
+
+
+                                            } else {
+                                                // send hit response
+                                                let response = BattleshipResponse {msg: Some(battleship_response::Msg::ShotResult(ShotResult{
+                                                    seq: battle.shot_seq,
+                                                    hit: false,
+                                                    sunk: false,
+                                                    won: false
+                                                }))};
+                                                let mut buf = vec![];
+                                                response.encode(&mut buf);
+                                                swarm.behaviour_mut().battleship.send_response(channel, buf);
+
+                                            }
+                                        }
+                                    }
+
+                                    _ => {}
+                                }
+                                
+                            }
+
                             _ => {}
                         }
-                    }
-                    
-                }
 
-                _ => {},
+                    }
+                    // icoming response
+                    SwarmEvent::Behaviour(MyBehaviourEvent::Battleship(
+                        request_response::Event::Message {
+                            peer,
+                            message: request_response::Message::Response {
+                                response,
+                                ..},
+                            ..
+                        }
+                    )) => {
+                        if let GameState::BATTLE(battle) = &mut state.game_state {
+                            let msg = BattleshipResponse::decode(response.as_slice()).unwrap();
+                            match msg {
+                                BattleshipResponse { msg: Some(req) } => {
+                                    match req {
+                                        BattleShip::battleship_response::Msg::ShotResult(ShotResult {
+                                            seq,
+                                            hit,
+                                            sunk,
+                                            won
+                                        }) => {
+                                            // shot result received
+                                            if let Some([row, col]) = battle.pening_shot.take() {
+                                                battle.my_shots[row][col] = true;
+                                                if hit {
+                                                    battle.their_board[row][col] = true;
+                                                }
+                                                if won {
+                                                    // i just won
+                                                    todo!();
+                                                }
+                                            }
+                                            battle.shot_seq = seq;
+                                            battle.phase = BattlePhase::WaitingForOpponent;
+                                        }
+
+                                        _ => {}
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        
+                    }
+
+                    _ => {},
+                }
             }
+
         }
+
+
 
         
         
@@ -1034,6 +1048,8 @@ fn safe_exit(swarm: &mut libp2p::Swarm<MyBehaviour>, state: &mut AppState) {
         libp2p::rendezvous::Namespace::new("peerboard/challenge/seeking".to_string()).unwrap(),
         BOOTSTRAP_PEER_ID.parse().unwrap(),
     );
+
+    state.exit = true;// exit the loop
 }
 
 fn is_place_possible(state: &BuildState) -> bool {
@@ -1600,6 +1616,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             selected_area: 0,
             peer_counts: HashMap::new(),
             game_state: GameState::MESSAGE,
+            exit: false
         };
 
         enable_raw_mode()?;
