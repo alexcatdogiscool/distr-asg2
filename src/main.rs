@@ -284,8 +284,8 @@ struct AppState {
     total_connections: usize,
     self_lookup_done: bool,
     my_peer_id: PeerId,
-    udp_port: Option<String>,
-    tcp_port: Option<String>,
+    udp_port: Option<u16>,
+    tcp_port: Option<u16>,
 
 }
 
@@ -1099,51 +1099,28 @@ async fn run_tui(
                         }
                         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
 
-                        // DEBUG
-                        state.messages.push(DisplayMessage {
-                            nickname: "IDENTIFY".to_string(),
-                            peer_id: "local".to_string(),
-                            content: format!("peer {} has addrs: {:?}", peer_id, info.listen_addrs),
-                            timestamp: 0,
-                        });
-
-                        state.messages.push(DisplayMessage {
-                            nickname: "IDENTIFY".to_string(),
-                            peer_id: "local".to_string(),
-                            content: format!("bootstrap observed me at: {}", info.observed_addr),
-                            timestamp: 0,
-                        });
-
-                        for proto in info.observed_addr.iter() {
+                        // Extract just the IP from observed_addr
+                        let observed_ip = info.observed_addr.iter().find_map(|proto| {
                             if let libp2p::multiaddr::Protocol::Ip4(ip) = proto {
-                                if let libp2p::multiaddr::Protocol::Udp(p) = proto {
-                                    let quic_addr: Multiaddr =
-                                        format!("/ip4/{}/udp/{}/quic-v1", ip, p)
-                                        .parse().unwrap();
-                                    swarm.add_external_address(quic_addr.clone());
-                                    swarm.behaviour_mut().kademlia.add_address(
-                                        &state.my_peer_id,
-                                        quic_addr.clone()
-                                    );
-                                    swarm.listen_on(quic_addr);
-                                }
-                                if let libp2p::multiaddr::Protocol::Tcp(p) = proto {
-                                    let tcp_addr: Multiaddr =
-                                        format!("/ip4/{}/tcp/{}", ip, p)
-                                        .parse().unwrap();
-                                    swarm.add_external_address(tcp_addr.clone());
-                                    swarm.behaviour_mut().kademlia.add_address(
-                                        &state.my_peer_id,
-                                        tcp_addr.clone()
-                                    );
-                                    swarm.listen_on(tcp_addr);
-                                }
-                                
+                                Some(ip)
+                            } else {
+                                None
+                            }
+                        });
+
+                        if let Some(ip) = observed_ip {
+                            // Combine observed public IP with our actual listen ports
+                            if let Some(p) = &state.tcp_port {
+                                let addr: Multiaddr = format!("/ip4/{}/tcp/{}", ip, p).parse().unwrap();
+                                swarm.add_external_address(addr.clone());
+                                swarm.behaviour_mut().kademlia.add_address(&state.my_peer_id, addr);
+                            }
+                            if let Some(p) = &state.udp_port {
+                                let addr: Multiaddr = format!("/ip4/{}/udp/{}/quic-v1", ip, p).parse().unwrap();
+                                swarm.add_external_address(addr.clone());
+                                swarm.behaviour_mut().kademlia.add_address(&state.my_peer_id, addr);
                             }
                         }
-
-                        swarm.add_external_address(info.observed_addr.clone());
-                        swarm.behaviour_mut().kademlia.add_address(&state.my_peer_id, info.observed_addr);
                     }
 
                     SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(kad_event)) => {
@@ -1991,8 +1968,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             total_connections: 0,
             self_lookup_done: false,
             my_peer_id: local_peer_id,
-            udp_port: None,
-            tcp_port: None
+            udp_port: udp_port,
+            tcp_port: tcp_port
         };
 
         enable_raw_mode()?;
