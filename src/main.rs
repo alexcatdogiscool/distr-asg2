@@ -1253,6 +1253,10 @@ async fn run_tui(
                             timestamp: 0,
                         });
 
+                        for addr in swarm.external_addresses().cloned().collect::<Vec<_>>() {
+                            swarm.behaviour_mut().kademlia.add_address(&state.my_peer_id, addr);
+                        }
+
                         // Sync all of them into kademlia as YOUR address
                         for addr in ext_addrs {
                             swarm.behaviour_mut().kademlia.add_address(&state.my_peer_id, addr);
