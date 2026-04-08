@@ -284,6 +284,8 @@ struct AppState {
     total_connections: usize,
     self_lookup_done: bool,
     my_peer_id: PeerId,
+    udp_port: Option<String>,
+    tcp_port: Option<String>,
 
 }
 
@@ -760,12 +762,12 @@ async fn run_tui(
                     
 
                     SwarmEvent::NewExternalAddrOfPeer { peer_id, address, .. } => {
-                        state.messages.push(DisplayMessage {
-                            nickname: "SWARM".to_string(),
-                            peer_id: "local".to_string(),
-                            content: format!("new peer: peer_id {}, and addr: {}", peer_id, address),
-                            timestamp: 0,
-                        });
+                        //state.messages.push(DisplayMessage {
+                        //    nickname: "SWARM".to_string(),
+                        //    peer_id: "local".to_string(),
+                        //    content: format!("new peer: peer_id {}, and addr: {}", peer_id, address),
+                        //    timestamp: 0,
+                        //});
                     }
                     
                     // gossipsub listen
@@ -1072,6 +1074,7 @@ async fn run_tui(
                             timestamp: 0,
                         });
                         // make sure kademlia knows this is us
+                        swarm.add_external_address(address.clone());
                         swarm.behaviour_mut().kademlia.add_address(&state.my_peer_id, address);
                     }
 
@@ -1110,6 +1113,21 @@ async fn run_tui(
                             content: format!("bootstrap observed me at: {}", info.observed_addr),
                             timestamp: 0,
                         });
+
+                        for proto in info.observed_addr.iter() {
+                            if let libp2p::multiaddr::Protocol::Ip4(ip) = proto {
+                                if let Some(p) = &state.udp_port {
+                                    let quic_addr: Multiaddr =
+                                        format!("/ip4/{}/udp/{}/quic-v1", ip, p)
+                                        .parse().unwrap();
+                                    swarm.add_external_address(quic_addr.clone());
+                                    swarm.behaviour_mut().kademlia.add_address(
+                                        &state.my_peer_id,
+                                        quic_addr
+                                    );
+                                }
+                            }
+                        }
 
                         swarm.add_external_address(info.observed_addr.clone());
                         swarm.behaviour_mut().kademlia.add_address(&state.my_peer_id, info.observed_addr);
@@ -1213,7 +1231,12 @@ async fn run_tui(
                             content: format!("Listening on: {}", address),
                             timestamp: 0,
                         });
+                        for comp in address.iter() {
+                            
+                        }
+                        
                         // tell kademlia about this listen address too
+                        swarm.add_external_address(address.clone());
                         swarm.behaviour_mut().kademlia.add_address(&state.my_peer_id, address);
                     }
 
@@ -1955,6 +1978,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             total_connections: 0,
             self_lookup_done: false,
             my_peer_id: local_peer_id,
+            udp_port: None,
+            tcp_port: None
         };
 
         enable_raw_mode()?;
