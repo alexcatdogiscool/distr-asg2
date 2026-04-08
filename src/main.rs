@@ -27,7 +27,7 @@ use std::{collections::HashMap, error::Error, fs, hash::{
         DefaultHasher,
         Hash,
         Hasher
-    }, io::stdout, net::Incoming, process::exit, time::Duration, u8::MIN};
+    }, io::stdout, net::Incoming, num::NonZero, process::exit, time::Duration, u8::MIN};
 use uuid::Uuid;
 use prost::Message;
 
@@ -319,11 +319,19 @@ async fn run_tui(
 
     let mut draw_interval = tokio::time::interval(Duration::from_millis(50));
 
+    let mut bootstrap_int = tokio::time::interval(Duration::from_secs(60));
+
 
     while !state.exit {
 
         
         tokio::select! {
+
+            _ = bootstrap_int.tick() => {
+                // make peer discovery faster
+                swarm.behaviour_mut().kademlia.bootstrap()?;
+                swarm.behaviour_mut().kademlia.get_closest_peers(state.my_peer_id);
+            }
 
             _ = draw_interval.tick() => {
                 // draw the tui
@@ -743,44 +751,24 @@ async fn run_tui(
             event = swarm.select_next_some() => {
                 match event {
 
-                    // mDNS stuff
-                    SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdnsEvent)) => {
-                        match mdnsEvent {
-                            mdns::Event::Discovered(list) => {
-
-                                state.messages.push(DisplayMessage {
-                                    nickname: "MDNS".to_string(),
-                                    peer_id: "local".to_string(),
-                                    content: format!("mdns discoverd triggered"),
-                                    timestamp: 0,
-                                });
-
-                                for (peer_id, addr) in list {
-                                    swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
-                                    // DEBUG
-                                    state.messages.push(DisplayMessage {
-                                        nickname: "KAD".to_string(),
-                                        peer_id: "local".to_string(),
-                                        content: format!("added peer_id {}, and addr: {}", peer_id, addr),
-                                        timestamp: 0,
-                                    });
-                                }
-
-                                // if this is the first time doing this:
-                                if !state.self_lookup_done {
-                                    swarm.behaviour_mut().kademlia.get_closest_peers(state.my_peer_id);
-                                    state.self_lookup_done = true;
-                                }
-                            }
-
-                            _ => {}
-                        }
-                    }
+                    
 
                     SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(libp2p::kad::Event::OutboundQueryProgressed { result, .. })) => {
                         match result {
                             libp2p::kad::QueryResult::GetClosestPeers(Ok(ok)) => {
+                                state.messages.push(DisplayMessage {
+                                    nickname: "KAD".to_string(),
+                                    peer_id: "local".to_string(),
+                                    content: format!("got closestPeer OK"),
+                                    timestamp: 0,
+                                });
                                 for peer in ok.peers {
+                                    state.messages.push(DisplayMessage {
+                                        nickname: "KAD".to_string(),
+                                        peer_id: "local".to_string(),
+                                        content: format!("got here!"),
+                                        timestamp: 0,
+                                    });
                                     for addr in peer.addrs {
                                         swarm.behaviour_mut().kademlia.add_address(&peer.peer_id, addr.clone());
                                         // DEBUG
@@ -1117,6 +1105,7 @@ async fn run_tui(
                     SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                         state.total_connections += 1;
                         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+                        swarm.behaviour_mut().kademlia.get_closest_peers(state.my_peer_id);
                     }
 
                     
@@ -1613,8 +1602,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
             let store = MemoryStore::new(peer_id);
             let mut kad_config = KadConfig::new(StreamProtocol::new("/peerboard/kad/1.0.0"));
-            kad_config.set_query_timeout(Duration::from_secs(30));
-            kad_config.set_record_ttl(Some(Duration::from_secs(3600)));
+            kad_config.set_query_timeout(Duration::from_secs(10));
+            kad_config.set_parallelism((NonZero::new(3).unwrap()));
+
             let mut kademlia = KadBehaviour::with_config(key.public().to_peer_id(), store, kad_config);
             kademlia.set_mode(Some(Mode::Server));
             
@@ -1666,7 +1656,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 mdns,
             }
         })?
-        .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(1000)))
+        .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(30)))
         .build();
 
 
