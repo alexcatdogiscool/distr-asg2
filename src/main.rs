@@ -279,6 +279,7 @@ struct AppState {
     peer_counts: std::collections::HashMap<String, usize>,
     game_state: GameState,
     exit: bool,
+    total_connections: usize,
 
 }
 
@@ -1041,6 +1042,10 @@ async fn run_tui(
                         
                     }
 
+                    SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                        state.total_connections += 1;
+                    }
+
                     _ => {},
                 }
             }
@@ -1208,8 +1213,8 @@ fn draw_ui(frame: &mut Frame, state: &mut AppState) {
 
     let list = List::new(items)
         .block(Block::bordered()
-        .title(format!("{} | #peers: {}",
-            state.current_topic.clone(), state.peer_counts.get(&state.current_topic).unwrap_or(&0)))
+        .title(format!("{} | #peers: {} | total_connections: {}",
+            state.current_topic.clone(), state.peer_counts.get(&state.current_topic).unwrap_or(&0), state.total_connections))
             .border_set(border::THICK))
         .direction(ListDirection::BottomToTop);
     
@@ -1645,7 +1650,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             selected_area: 0,
             peer_counts: HashMap::new(),
             game_state: GameState::MESSAGE,
-            exit: false
+            exit: false,
+            total_connections: 0,
         };
 
         enable_raw_mode()?;
