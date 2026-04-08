@@ -880,6 +880,7 @@ async fn run_tui(
                                 
                                 for addr in regs.record.addresses() {
                                     swarm.dial(addr.clone())?;
+                                    swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                                 }
                                 
                             }
@@ -1731,6 +1732,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
                 if tcp_port.is_some() && udp_port.is_some() {
+                    println!("tcp: {:?}, udp: {:?}", tcp_port, udp_port);
                     break;
                 }
             }
