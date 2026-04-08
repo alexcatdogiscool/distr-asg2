@@ -563,8 +563,7 @@ async fn run_tui(
                                     
 
                                     KeyCode::Esc => {
-                                        safe_exit(swarm, state);
-                                        break;
+                                        state.game_state = GameState::MESSAGE;
                                     },// close da app!
 
                                     _ => {}
@@ -880,8 +879,9 @@ async fn run_tui(
                                 
                                 for addr in regs.record.addresses() {
                                     swarm.dial(addr.clone())?;
-                                    swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+                                    
                                 }
+                                swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                                 
                             }
                         }
