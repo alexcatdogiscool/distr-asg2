@@ -47,6 +47,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListDirection, ListItem, ListState, Paragraph, Widget},
     style::{Style, Color, Modifier},
 };
+use local_ip_address::local_ip;
 
 
 static BOOTSTRAP_PEER_ID: &str = "12D3KooWCvwqT3JUzVQczCvAVFa9EGzNqjHHSMVHVhm3RVyscCNY";
@@ -1569,10 +1570,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "0".to_string()
     };
 
-    
+    let local_ip = local_ip().unwrap();
 
-    let multiaddr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{listen_port}").parse()?;
-    let multiaddr_quic: Multiaddr = format!("/ip4/0.0.0.0/udp/{listen_port}/quic-v1").parse()?;
+    let multiaddr: Multiaddr = format!("/ip4/{local_ip}/tcp/{listen_port}").parse()?;
+    let multiaddr_quic: Multiaddr = format!("/ip4/{local_ip}/udp/{listen_port}/quic-v1").parse()?;
 
     if let Some(ip) = cli.public_ip {
         let ext: Multiaddr = format!("/ip4/{ip}/tcp/{listen_port}").parse()?;
@@ -1580,8 +1581,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     
 
-    let _ = swarm.listen_on(multiaddr);
-    let _ = swarm.listen_on(multiaddr_quic);
+    let _ = swarm.listen_on(multiaddr.clone());
+    let _ = swarm.listen_on(multiaddr_quic.clone());
+    swarm.add_external_address(multiaddr.clone());
+    swarm.add_external_address(multiaddr_quic.clone());
+    
     
 
     // dial the bootdtrap node vvv

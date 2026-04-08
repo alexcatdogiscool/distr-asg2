@@ -16,6 +16,7 @@ prost = "0.14"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 ratatui = "0.30.0"
 crossterm = "0.29.0"
+local-ip-address = "0.6.11"
 
 [dependencies.libp2p]
 version = "0.56.0"
