@@ -1053,13 +1053,66 @@ async fn run_tui(
                         
                     }
 
+                    SwarmEvent::ExternalAddrConfirmed { address } => {
+                        state.messages.push(DisplayMessage {
+                            nickname: "EXTERNAL".to_string(),
+                            peer_id: "local".to_string(),
+                            content: format!("my confirmed external addr: {}", address),
+                            timestamp: 0,
+                        });
+                        // make sure kademlia knows this is us
+                        swarm.behaviour_mut().kademlia.add_address(&state.my_peer_id, address);
+                    }
+
+                    SwarmEvent::NewExternalAddrCandidate { address } => {
+                        state.messages.push(DisplayMessage {
+                            nickname: "EXTERNAL".to_string(),
+                            peer_id: "local".to_string(),
+                            content: format!("a candidate external addr: {}", address),
+                            timestamp: 0,
+                        });
+                        // make sure kademlia knows this is us
+                        swarm.behaviour_mut().kademlia.add_address(&state.my_peer_id, address);
+                    }
+
+                    
+
+                    SwarmEvent::Behaviour(MyBehaviourEvent::Identify(
+                        libp2p::identify::Event::Sent { peer_id, .. }
+                    )) => {
+                        state.messages.push(DisplayMessage {
+                            nickname: "IDENTIFY".to_string(),
+                            peer_id: "local".to_string(),
+                            content: format!("sent identify info to {}", peer_id),
+                            timestamp: 0,
+                        });
+                    }
+
                     SwarmEvent::Behaviour(MyBehaviourEvent::Identify(
                         libp2p::identify::Event::Received { peer_id, info, .. }
                     )) => {
-                        for addr in info.listen_addrs {
+                        for addr in info.listen_addrs.clone() {
                             swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
                         }
                         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+
+                        // DEBUG
+                        state.messages.push(DisplayMessage {
+                            nickname: "IDENTIFY".to_string(),
+                            peer_id: "local".to_string(),
+                            content: format!("peer {} has addrs: {:?}", peer_id, info.listen_addrs),
+                            timestamp: 0,
+                        });
+
+                        state.messages.push(DisplayMessage {
+                            nickname: "IDENTIFY".to_string(),
+                            peer_id: "local".to_string(),
+                            content: format!("bootstrap observed me at: {}", info.observed_addr),
+                            timestamp: 0,
+                        });
+
+                        swarm.add_external_address(info.observed_addr.clone());
+                        swarm.behaviour_mut().kademlia.add_address(&state.my_peer_id, info.observed_addr);
                     }
 
                     SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(kad_event)) => {
