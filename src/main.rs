@@ -1074,6 +1074,15 @@ async fn run_tui(
                         });
                     }
 
+                    SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(e)) => {
+                        state.messages.push(DisplayMessage {
+                            nickname: "KAD".to_string(),
+                            peer_id: "local".to_string(),
+                            content: format!("{:?}", e),
+                            timestamp: 0
+                        });
+                    }
+
                     SwarmEvent::Dialing { peer_id, connection_id } => {
                         if peer_id.unwrap().to_string().eq("12D3KooWGKMA97YjCEVcTwpURweCVjBoYaYS1YN5h6veUKmBct8f") ||
                                 peer_id.unwrap().to_string().eq("12D3KooWNMg46msQPYSS1rvCQS91zrYjrQYEckL9TxEkbkpMG2g8") {
