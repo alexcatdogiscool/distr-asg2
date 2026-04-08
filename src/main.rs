@@ -873,7 +873,11 @@ async fn run_tui(
                                     continue;
                                 }
                                 rend.seeking_peers.push(peer_id);// add peers seeking peers to the list (super cool patern matching!!)
-                                swarm.dial(peer_id)?;
+                                
+                                for addr in regs.record.addresses() {
+                                    swarm.dial(addr.clone())?;
+                                }
+                                
                             }
                         }
                         
