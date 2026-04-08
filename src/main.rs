@@ -1064,6 +1064,16 @@ async fn run_tui(
 
                     //      DEBUG!!!
 
+                    SwarmEvent::NewListenAddr { address, .. } => {
+                        // display this in your TUI messages list as a debug message
+                        state.messages.push(DisplayMessage {
+                            nickname: "SYSTEM".to_string(),
+                            peer_id: "local".to_string(),
+                            content: format!("Listening on: {}", address),
+                            timestamp: 0,
+                        });
+                    }
+
                     SwarmEvent::Dialing { peer_id, connection_id } => {
                         if peer_id.unwrap().to_string().eq("12D3KooWGKMA97YjCEVcTwpURweCVjBoYaYS1YN5h6veUKmBct8f") ||
                                 peer_id.unwrap().to_string().eq("12D3KooWNMg46msQPYSS1rvCQS91zrYjrQYEckL9TxEkbkpMG2g8") {
@@ -1676,6 +1686,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(1000)))
         .build();
 
+
     // set up my nodes id stuffs v
     let listen_port: String = if cli.port.is_some() {
         cli.port.unwrap()
@@ -1683,26 +1694,49 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "0".to_string()
     };
 
-    let local_ip = local_ip().unwrap();
-
     let multiaddr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{listen_port}").parse()?;
     let multiaddr_quic: Multiaddr = format!("/ip4/0.0.0.0/udp/{listen_port}/quic-v1").parse()?;
-    
-
-    if let Some(ip) = cli.public_ip {
-        let ext: Multiaddr = format!("/ip4/{ip}/tcp/{listen_port}").parse()?;
-        let ext_quic: Multiaddr = format!("/ip4/{ip}/udp/{listen_port}/quic-v1").parse()?;
-        swarm.add_external_address(ext.clone());
-        swarm.add_external_address(ext_quic.clone());
-        // tell kademlia about this too
-        swarm.behaviour_mut().kademlia.add_address(&local_peer_id, ext);
-        swarm.behaviour_mut().kademlia.add_address(&local_peer_id, ext_quic);
-        
-    }
-    
 
     let _ = swarm.listen_on(multiaddr.clone());
     let _ = swarm.listen_on(multiaddr_quic.clone());
+
+    let mut tcp_port = None;
+    let mut udp_port = None;
+
+    loop {// get the correct port bindings
+        match swarm.select_next_some().await {
+            SwarmEvent::NewListenAddr { address, .. } => {
+                for proto in address.iter() {
+                    match proto {
+                        libp2p::multiaddr::Protocol::Tcp(p) => tcp_port = Some(p),
+                        libp2p::multiaddr::Protocol::Udp(p) => udp_port = Some(p),
+                        _ => {}
+                    }
+                }
+                if tcp_port.is_some() && udp_port.is_some() {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    
+
+    if let Some(ip) = cli.public_ip {
+        if let Some(p) = tcp_port {
+            let ext: Multiaddr = format!("/ip4/{ip}/tcp/{p}").parse()?;
+            swarm.add_external_address(ext.clone());
+            swarm.behaviour_mut().kademlia.add_address(&local_peer_id, ext);
+        }
+        if let Some(p) = udp_port {
+            let ext_quic: Multiaddr = format!("/ip4/{ip}/udp/{p}/quic-v1").parse()?;
+            swarm.add_external_address(ext_quic.clone());
+            swarm.behaviour_mut().kademlia.add_address(&local_peer_id, ext_quic);
+        }
+    }
+    
+
+    
     //swarm.add_external_address(multiaddr.clone());
     //swarm.add_external_address(multiaddr_quic.clone());
     
