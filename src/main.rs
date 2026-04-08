@@ -1043,9 +1043,18 @@ async fn run_tui(
                     }
 
                     SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(
-                        libp2p::kad::Event::RoutingUpdated { peer, .. }
+                        libp2p::kad::Event::RoutingUpdated { peer, addresses, .. }
                     )) => {
+                        for addr in addresses.iter() {
+                            let _ = swarm.dial(
+                                libp2p::swarm::dial_opts::DialOpts::peer_id(peer)
+                                    .addresses(addresses.iter().cloned().collect())
+                                    .build()
+                            );
+                            break;
+                        }
                         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer);
+
                     }
 
                     SwarmEvent::ConnectionEstablished { peer_id, .. } => {
@@ -1684,9 +1693,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let ext: Multiaddr = format!("/ip4/{ip}/tcp/{listen_port}").parse()?;
         let ext_quic: Multiaddr = format!("/ip4/{ip}/udp/{listen_port}/quic-v1").parse()?;
         swarm.add_external_address(ext.clone());
-        //swarm.listen_on(ext);// this line is new!!!
         swarm.add_external_address(ext_quic.clone());
-        //swarm.listen_on(ext_quic);// this line is new!!!
+        // tell kademlia about this too
+        swarm.behaviour_mut().kademlia.add_address(&local_peer_id, ext);
+        swarm.behaviour_mut().kademlia.add_address(&local_peer_id, ext_quic);
+        
     }
     
 
