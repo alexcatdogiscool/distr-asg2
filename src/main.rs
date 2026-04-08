@@ -84,6 +84,7 @@ struct MyBehaviour {
     kademlia: KadBehaviour<MemoryStore>,
     gossipsub: gossipsub::Behaviour,
     mdns: mdns::tokio::Behaviour,
+    identify: identify::Behaviour,
 }
 
 
@@ -1052,11 +1053,18 @@ async fn run_tui(
                         
                     }
 
+                    SwarmEvent::Behaviour(MyBehaviourEvent::Identify(
+                        libp2p::identify::Event::Received { peer_id, info, .. }
+                    )) => {
+                        for addr in info.listen_addrs {
+                            swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
+                        }
+                        swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+                    }
+
                     SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(kad_event)) => {
                         match kad_event {
                             libp2p::kad::Event::RoutingUpdated { peer, addresses, .. } => {
-                                let record_key = libp2p::kad::RecordKey::new(&peer.to_bytes());
-                                swarm.behaviour_mut().kademlia.get_record(record_key);
 
                                 for addr in addresses.iter() {
                                     let _ = swarm.dial(
@@ -1064,18 +1072,19 @@ async fn run_tui(
                                             .addresses(addresses.iter().cloned().collect())
                                             .build()
                                     );
+                                    swarm.dial(peer);
                                     swarm.behaviour_mut().kademlia.add_address(&peer, addr.clone());
                                 }
                                 swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer);
                             }
 
-                            libp2p::kad::Event::OutboundQueryProgressed {result, ..} => {
+                            libp2p::kad::Event::OutboundQueryProgressed {result, id, ..} => {
                                 match result {
                                     libp2p::kad::QueryResult::GetClosestPeers(Ok(ok)) => {
                                         state.messages.push(DisplayMessage {
                                             nickname: "KAD".to_string(),
                                             peer_id: "local".to_string(),
-                                            content: format!("got closestPeer OK"),
+                                            content: format!("got closestPeer OK. id: {}", id),
                                             timestamp: 0,
                                         });
                                         for peer in ok.peers {
@@ -1104,6 +1113,15 @@ async fn run_tui(
                                         }
                                     }
 
+                                    libp2p::kad::QueryResult::GetClosestPeers(Err(e)) => {
+                                        state.messages.push(DisplayMessage {
+                                            nickname: "KAD".to_string(),
+                                            peer_id: "local".to_string(),
+                                            content: format!("got closestPeer Err. id: {}, error: {}", id, e),
+                                            timestamp: 0,
+                                        });
+                                    }
+
                                     libp2p::kad::QueryResult::Bootstrap(Ok(result)) => {
                                         if result.num_remaining == 0 {
                                             swarm.behaviour_mut().kademlia.get_closest_peers(state.my_peer_id);
@@ -1129,9 +1147,12 @@ async fn run_tui(
 
 
                     SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+                        
                         state.total_connections += 1;
                         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+
                         if peer_id.to_string() == BOOTSTRAP_PEER_ID {
+
                             state.messages.push(DisplayMessage {
                                 nickname: "BOOTSTRAP".to_string(),
                                 peer_id: "local".to_string(),
@@ -1139,7 +1160,25 @@ async fn run_tui(
                                 timestamp: 0,
                             });
                             swarm.behaviour_mut().kademlia.get_closest_peers(state.my_peer_id);
-                            swarm.behaviour_mut().kademlia.bootstrap();
+                            let res = swarm.behaviour_mut().kademlia.bootstrap();
+                            match res {
+                                Ok(ok) => {
+                                    state.messages.push(DisplayMessage {
+                                        nickname: "BOOTSTRAP".to_string(),
+                                        peer_id: "local".to_string(),
+                                        content: format!("Bootstrap success id: {}", ok),
+                                        timestamp: 0,
+                                    });
+                                }
+                                Err(e) => {
+                                    state.messages.push(DisplayMessage {
+                                        nickname: "BOOTSTRAP".to_string(),
+                                        peer_id: "local".to_string(),
+                                        content: format!("Bootstrap error {:?}", e),
+                                        timestamp: 0,
+                                    });
+                                }
+                            }
                         }
                         
                     }
@@ -1661,7 +1700,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
             };
 
-            
+            // identify
+            let identify = libp2p::identify::Behaviour::new(
+                libp2p::identify::Config::new(
+                    "/peerboard/1.0.0".to_string(),
+                    key.public(),
+                )
+            );
 
 
             // cfg
@@ -1690,6 +1735,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 kademlia,
                 gossipsub,
                 mdns,
+                identify
+
             }
         })?
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(30)))
