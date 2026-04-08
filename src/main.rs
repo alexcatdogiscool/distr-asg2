@@ -747,8 +747,23 @@ async fn run_tui(
                     SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdnsEvent)) => {
                         match mdnsEvent {
                             mdns::Event::Discovered(list) => {
+
+                                state.messages.push(DisplayMessage {
+                                    nickname: "MDNS".to_string(),
+                                    peer_id: "local".to_string(),
+                                    content: format!("mdns discoverd triggered"),
+                                    timestamp: 0,
+                                });
+
                                 for (peer_id, addr) in list {
-                                    swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
+                                    swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
+                                    // DEBUG
+                                    state.messages.push(DisplayMessage {
+                                        nickname: "KAD".to_string(),
+                                        peer_id: "local".to_string(),
+                                        content: format!("added peer_id {}, and addr: {}", peer_id, addr),
+                                        timestamp: 0,
+                                    });
                                 }
 
                                 // if this is the first time doing this:
@@ -1068,12 +1083,6 @@ async fn run_tui(
                         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                     }
 
-                    SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
-                        for (peer_id, multiaddr) in list {
-                            swarm.behaviour_mut().kademlia.add_address(&peer_id, multiaddr);
-                        }
-                    }
-
                     
 
                     //      DEBUG!!!
@@ -1095,50 +1104,6 @@ async fn run_tui(
                             content: format!("{:?}", e),
                             timestamp: 0
                         });
-                    }
-
-                    SwarmEvent::Dialing { peer_id, connection_id } => {
-                        if peer_id.unwrap().to_string().eq("12D3KooWGKMA97YjCEVcTwpURweCVjBoYaYS1YN5h6veUKmBct8f") ||
-                                peer_id.unwrap().to_string().eq("12D3KooWNMg46msQPYSS1rvCQS91zrYjrQYEckL9TxEkbkpMG2g8") {
-                            let now = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap()
-                                .as_secs() as i64;
-
-                            let msg = PeerBoardMessage {
-                                peer_id: peer_id.unwrap().to_string(),
-                                topic: state.current_topic.clone(),
-                                content: "Dialing this peer".to_string(),
-                                timestamp: now,
-                                message_id: Uuid::new_v4().to_string(),
-                                nickname: "???".to_string(),
-                            };
-
-                            // check the message for validity
-                            if (check_msg(&msg)) {
-                                let mut buf = Vec::new();
-                                msg.encode(&mut buf).unwrap();
-                                // construct the topic
-                                let topic = gossipsub::IdentTopic::new(&state.current_topic);
-                                // send it out!
-                                match swarm.behaviour_mut().gossipsub.publish(topic, buf) {
-                                    Ok(_) => {},
-                                    Err(gossipsub::PublishError::NoPeersSubscribedToTopic) => {},// dont care!
-                                    Err(e) => return Err(e.into()),
-                                }
-
-                                // add it to the db
-                                conn.execute(
-                                    "INSERT INTO msgs (peer_id, topic, content, timestamp, message_id, nickname)
-                                    VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                                (msg.peer_id, msg.topic, msg.content, msg.timestamp, msg.message_id, msg.nickname),
-                                ).expect("couldnt add msg to the db");
-                                // update the states msgs'
-                                state.messages = load_messages(conn, &state.current_topic);
-                            }
-                        }
-                        
-                        
                     }
 
                     
@@ -1613,7 +1578,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let store = MemoryStore::new(peer_id);
             let mut kad_config = KadConfig::new(StreamProtocol::new("/peerboard/kad/1.0.0"));
             kad_config.set_query_timeout(Duration::from_secs(30));
-            let mut kademlia = KadBehaviour::with_config(peer_id, store, kad_config);
+            let mut kademlia = KadBehaviour::with_config(key.public().to_peer_id(), store, kad_config);
             kademlia.set_mode(Some(Mode::Server));
             
 
