@@ -84,7 +84,6 @@ struct MyBehaviour {
     kademlia: KadBehaviour<MemoryStore>,
     gossipsub: gossipsub::Behaviour,
     mdns: mdns::tokio::Behaviour,
-    identify: identify::Behaviour,
 }
 
 
@@ -282,6 +281,8 @@ struct AppState {
     game_state: GameState,
     exit: bool,
     total_connections: usize,
+    self_lookup_done: bool,
+    my_peer_id: PeerId,
 
 }
 
@@ -318,20 +319,11 @@ async fn run_tui(
 
     let mut draw_interval = tokio::time::interval(Duration::from_millis(50));
 
-    let mut kad_interval = tokio::time::interval(Duration::from_secs(5));
-
 
     while !state.exit {
 
         
         tokio::select! {
-
-            _ = kad_interval.tick() => {
-                let mut random_key = [0u8; 32];
-                rand::thread_rng().try_fill(&mut random_key);
-                let random_peer_id = PeerId::from_bytes(&random_key).unwrap_or_else(|_| PeerId::random());
-                swarm.behaviour_mut().kademlia.get_closest_peers(random_peer_id);
-            }
 
             _ = draw_interval.tick() => {
                 // draw the tui
@@ -755,14 +747,14 @@ async fn run_tui(
                     SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdnsEvent)) => {
                         match mdnsEvent {
                             mdns::Event::Discovered(list) => {
-                                for (peer_id, _addr) in list {
-                                    swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+                                for (peer_id, addr) in list {
+                                    swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
                                 }
-                            }
 
-                            mdns::Event::Expired(list) => {
-                                for (peer_id, _addr) in list {
-                                    swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
+                                // if this is the first time doing this:
+                                if !state.self_lookup_done {
+                                    swarm.behaviour_mut().kademlia.get_closest_peers(state.my_peer_id);
+                                    state.self_lookup_done = true;
                                 }
                             }
 
@@ -1076,19 +1068,13 @@ async fn run_tui(
                         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                     }
 
-                    SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(
-                        libp2p::kad::Event::OutboundQueryProgressed { result, .. }
-                    )) => {
-                        match result {
-                            QueryResult::GetClosestPeers(Ok(ok)) => {
-                                for peer in ok.peers {
-                                    let _ = swarm.dial(peer.peer_id);
-                                }
-                            }
-
-                            _ => {}
+                    SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
+                        for (peer_id, multiaddr) in list {
+                            swarm.behaviour_mut().kademlia.add_address(&peer_id, multiaddr);
                         }
                     }
+
+                    
 
                     //      DEBUG!!!
 
@@ -1647,10 +1633,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
             };
 
-            // identify
-            let identify = identify::Behaviour::new(
-                identify::Config::new("/peerboard/identify/1.0.0".into(), key.public())
-            );
+            
 
 
             // cfg
@@ -1679,7 +1662,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 kademlia,
                 gossipsub,
                 mdns,
-                identify
             }
         })?
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(1000)))
@@ -1803,6 +1785,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             game_state: GameState::MESSAGE,
             exit: false,
             total_connections: 0,
+            self_lookup_done: false,
+            my_peer_id: local_peer_id,
         };
 
         enable_raw_mode()?;
