@@ -1116,16 +1116,29 @@ async fn run_tui(
 
                         for proto in info.observed_addr.iter() {
                             if let libp2p::multiaddr::Protocol::Ip4(ip) = proto {
-                                if let Some(p) = &state.udp_port {
+                                if let libp2p::multiaddr::Protocol::Udp(p) = proto {
                                     let quic_addr: Multiaddr =
                                         format!("/ip4/{}/udp/{}/quic-v1", ip, p)
                                         .parse().unwrap();
                                     swarm.add_external_address(quic_addr.clone());
                                     swarm.behaviour_mut().kademlia.add_address(
                                         &state.my_peer_id,
-                                        quic_addr
+                                        quic_addr.clone()
                                     );
+                                    swarm.listen_on(quic_addr);
                                 }
+                                if let libp2p::multiaddr::Protocol::Tcp(p) = proto {
+                                    let tcp_addr: Multiaddr =
+                                        format!("/ip4/{}/tcp/{}", ip, p)
+                                        .parse().unwrap();
+                                    swarm.add_external_address(tcp_addr.clone());
+                                    swarm.behaviour_mut().kademlia.add_address(
+                                        &state.my_peer_id,
+                                        tcp_addr.clone()
+                                    );
+                                    swarm.listen_on(tcp_addr);
+                                }
+                                
                             }
                         }
 
@@ -1848,8 +1861,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let multiaddr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{listen_port}").parse()?;
     let multiaddr_quic: Multiaddr = format!("/ip4/0.0.0.0/udp/{listen_port}/quic-v1").parse()?;
 
-    let _ = swarm.listen_on(multiaddr.clone());
-    let _ = swarm.listen_on(multiaddr_quic.clone());
+    swarm.listen_on(multiaddr.clone())?;
+    swarm.listen_on(multiaddr_quic.clone())?;
 
     let mut tcp_port = None;
     let mut udp_port = None;
