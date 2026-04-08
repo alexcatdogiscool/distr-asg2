@@ -319,7 +319,7 @@ async fn run_tui(
 
     let mut draw_interval = tokio::time::interval(Duration::from_millis(50));
 
-    let mut bootstrap_int = tokio::time::interval(Duration::from_secs(60));
+    let mut bootstrap_int = tokio::time::interval(Duration::from_secs(35));
 
 
     while !state.exit {
@@ -1753,6 +1753,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         // self lookup!!! v
 
         swarm.behaviour_mut().kademlia.get_closest_peers(local_peer_id);
+        swarm.behaviour_mut().kademlia.get_closest_peers(bootstrap_peer_id);
+        
         println!("bootstrapping from bootstrap id");
     }
     else {
