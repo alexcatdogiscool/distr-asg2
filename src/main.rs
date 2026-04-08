@@ -421,6 +421,18 @@ async fn run_tui(
                                             if state.topic_buffer.eq("/rendezvous") {
                                                 state.game_state = GameState::RENDEZVOUS(RendezvousState { seeking_peers: vec![], refresh: false, selected: None });
                                                 // register to the rendezvous node
+
+                                                // DEBUG
+                                                let ext_addrs: Vec<Multiaddr> = swarm.external_addresses().cloned().collect();
+                                                state.messages.push(DisplayMessage {
+                                                    nickname: "DEBUG".to_string(),
+                                                    peer_id: "local".to_string(),
+                                                    content: format!("external addrs at register time: {:?}", ext_addrs),
+                                                    timestamp: 0,
+                                                });
+
+                                                
+
                                                 swarm.behaviour_mut().rendezvous.register(
                                                     libp2p::rendezvous::Namespace::new("peerboard/challenge/seeking".to_string()).unwrap(),
                                                     BOOTSTRAP_PEER_ID.parse().unwrap(),
@@ -1232,6 +1244,19 @@ async fn run_tui(
 
 
                     SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+
+                        let ext_addrs: Vec<Multiaddr> = swarm.external_addresses().cloned().collect();
+                        state.messages.push(DisplayMessage {
+                            nickname: "DEBUG".to_string(),
+                            peer_id: "local".to_string(),
+                            content: format!("external addrs: {:?}", ext_addrs),
+                            timestamp: 0,
+                        });
+
+                        // Sync all of them into kademlia as YOUR address
+                        for addr in ext_addrs {
+                            swarm.behaviour_mut().kademlia.add_address(&state.my_peer_id, addr);
+                        }
                         
                         state.total_connections += 1;
                         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
