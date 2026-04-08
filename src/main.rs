@@ -48,7 +48,6 @@ use ratatui::{
     style::{Style, Color, Modifier},
 };
 use local_ip_address::local_ip;
-use external_ip::get_ipv4;
 
 
 static BOOTSTRAP_PEER_ID: &str = "12D3KooWCvwqT3JUzVQczCvAVFa9EGzNqjHHSMVHVhm3RVyscCNY";
@@ -1693,6 +1692,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         };
 
         swarm.behaviour_mut().kademlia.add_address(&bootstrap_peer_id, bootstrap_multiaddr.clone());
+        swarm.behaviour_mut().kademlia.bootstrap();
+        
         swarm.dial(bootstrap_multiaddr)?;
         // self lookup!!! v
         swarm.behaviour_mut().kademlia.bootstrap()?;
