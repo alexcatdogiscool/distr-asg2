@@ -776,7 +776,39 @@ async fn run_tui(
                             _ => {}
                         }
                     }
+
+                    SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(libp2p::kad::Event::OutboundQueryProgressed { result, .. })) => {
+                        match result {
+                            libp2p::kad::QueryResult::GetClosestPeers(Ok(ok)) => {
+                                for peer in ok.peers {
+                                    for addr in peer.addrs {
+                                        swarm.behaviour_mut().kademlia.add_address(&peer.peer_id, addr.clone());
+                                        // DEBUG
+                                        state.messages.push(DisplayMessage {
+                                            nickname: "KAD".to_string(),
+                                            peer_id: "local".to_string(),
+                                            content: format!("added peer_id {}, and addr: {}", peer.peer_id, addr),
+                                            timestamp: 0,
+                                        });
+                                    }
+                                }
+                            }
+
+                            _ => {}
+                        }
+                    }
+
                     
+                    
+
+                    SwarmEvent::NewExternalAddrOfPeer { peer_id, address, .. } => {
+                        state.messages.push(DisplayMessage {
+                            nickname: "SWARM".to_string(),
+                            peer_id: "local".to_string(),
+                            content: format!("new peer: peer_id {}, and addr: {}", peer_id, address),
+                            timestamp: 0,
+                        });
+                    }
                     
                     // gossipsub listen
                     SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
@@ -1066,6 +1098,10 @@ async fn run_tui(
                     SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(
                         libp2p::kad::Event::RoutingUpdated { peer, addresses, .. }
                     )) => {
+
+                        let record_key = libp2p::kad::RecordKey::new(&peer.to_bytes());
+                        swarm.behaviour_mut().kademlia.get_record(record_key);
+
                         for addr in addresses.iter() {
                             let _ = swarm.dial(
                                 libp2p::swarm::dial_opts::DialOpts::peer_id(peer)
@@ -1578,6 +1614,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let store = MemoryStore::new(peer_id);
             let mut kad_config = KadConfig::new(StreamProtocol::new("/peerboard/kad/1.0.0"));
             kad_config.set_query_timeout(Duration::from_secs(30));
+            kad_config.set_record_ttl(Some(Duration::from_secs(3600)));
             let mut kademlia = KadBehaviour::with_config(key.public().to_peer_id(), store, kad_config);
             kademlia.set_mode(Some(Mode::Server));
             
@@ -1680,6 +1717,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
             swarm.add_external_address(ext_quic.clone());
             swarm.behaviour_mut().kademlia.add_address(&local_peer_id, ext_quic);
         }
+
+        let external_addrs: Vec<Multiaddr> = swarm.external_addresses().cloned().collect();
+        if !external_addrs.is_empty() {
+            // create a record of my address
+            let addr_bytes = external_addrs.iter()
+                .flat_map(|addr| addr.to_vec())
+                .collect::<Vec<u8>>();
+
+            let record_key = libp2p::kad::RecordKey::new(&local_peer_id.to_bytes());
+            let record = libp2p::kad::Record::new(record_key, addr_bytes);
+
+            if let Err(e) = swarm.behaviour_mut().kademlia.put_record(record, libp2p::kad::Quorum::One) {
+                println!("failed to publish address record: {}", e);
+            } else {
+                println!("published address record!");
+            }
+
+        }
+
     }
     
 
@@ -1705,7 +1761,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         
         swarm.dial(bootstrap_multiaddr)?;
         // self lookup!!! v
-        swarm.behaviour_mut().kademlia.bootstrap()?;
+
+        swarm.behaviour_mut().kademlia.get_closest_peers(local_peer_id);
         println!("bootstrapping from bootstrap id");
     }
     else {
