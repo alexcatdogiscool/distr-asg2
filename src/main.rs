@@ -22,7 +22,7 @@ use clap::Parser;
 use futures::{StreamExt, task::Poll};
 use ed25519_dalek::Signature;
 use ed25519_dalek::SigningKey;
-use rand::rngs::OsRng;
+use rand::{Rng, rngs::OsRng};
 use std::{collections::HashMap, error::Error, fs, hash::{
         DefaultHasher,
         Hash,
@@ -318,10 +318,21 @@ async fn run_tui(
 
     let mut draw_interval = tokio::time::interval(Duration::from_millis(50));
 
+    let mut kad_interval = tokio::time::interval(Duration::from_secs(5));
+
 
     while !state.exit {
 
+        
         tokio::select! {
+
+            _ = kad_interval.tick() => {
+                let mut random_key = [0u8; 32];
+                rand::thread_rng().try_fill(&mut random_key);
+                let random_peer_id = PeerId::from_bytes(&random_key).unwrap_or_else(|_| PeerId::random());
+                swarm.behaviour_mut().kademlia.get_closest_peers(random_peer_id);
+            }
+
             _ = draw_interval.tick() => {
                 // draw the tui
                 terminal.draw(|frame| {
@@ -1065,6 +1076,20 @@ async fn run_tui(
                         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                     }
 
+                    SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(
+                        libp2p::kad::Event::OutboundQueryProgressed { result, .. }
+                    )) => {
+                        match result {
+                            QueryResult::GetClosestPeers(Ok(ok)) => {
+                                for peer in ok.peers {
+                                    let _ = swarm.dial(peer.peer_id);
+                                }
+                            }
+
+                            _ => {}
+                        }
+                    }
+
                     //      DEBUG!!!
 
                     SwarmEvent::NewListenAddr { address, .. } => {
@@ -1130,51 +1155,7 @@ async fn run_tui(
                         
                     }
 
-                    SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                        if let GameState::MESSAGE = &mut state.game_state {
-                            if peer_id.unwrap().to_string().eq("12D3KooWGKMA97YjCEVcTwpURweCVjBoYaYS1YN5h6veUKmBct8f") ||
-                                peer_id.unwrap().to_string().eq("12D3KooWNMg46msQPYSS1rvCQS91zrYjrQYEckL9TxEkbkpMG2g8") {
-                                    let now = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap()
-                                    .as_secs() as i64;
-
-                                let msg = PeerBoardMessage {
-                                    peer_id: peer_id.unwrap().to_string(),
-                                    topic: state.current_topic.clone(),
-                                    content: format!("FAILED to dial this peer with error: {error}").to_string(),
-                                    timestamp: now,
-                                    message_id: Uuid::new_v4().to_string(),
-                                    nickname: "???".to_string(),
-                                };
-
-                                // check the message for validity
-                                if (check_msg(&msg)) {
-                                    let mut buf = Vec::new();
-                                    msg.encode(&mut buf).unwrap();
-                                    // construct the topic
-                                    let topic = gossipsub::IdentTopic::new(&state.current_topic);
-                                    // send it out!
-                                    match swarm.behaviour_mut().gossipsub.publish(topic, buf) {
-                                        Ok(_) => {},
-                                        Err(gossipsub::PublishError::NoPeersSubscribedToTopic) => {},// dont care!
-                                        Err(e) => return Err(e.into()),
-                                    }
-
-                                    // add it to the db
-                                    conn.execute(
-                                        "INSERT INTO msgs (peer_id, topic, content, timestamp, message_id, nickname)
-                                        VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                                    (msg.peer_id, msg.topic, msg.content, msg.timestamp, msg.message_id, msg.nickname),
-                                    ).expect("couldnt add msg to the db");
-                                    // update the states msgs'
-                                    state.messages = load_messages(conn, &state.current_topic);
-                                }
-                                }
-                            
-                        }
-                        
-                    }
+                    
 
                     _ => {},
                 }
