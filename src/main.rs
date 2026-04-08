@@ -48,6 +48,7 @@ use ratatui::{
     style::{Style, Color, Modifier},
 };
 use local_ip_address::local_ip;
+use external_ip::get_ipv4;
 
 
 static BOOTSTRAP_PEER_ID: &str = "12D3KooWCvwqT3JUzVQczCvAVFa9EGzNqjHHSMVHVhm3RVyscCNY";
@@ -1661,6 +1662,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let multiaddr: Multiaddr = format!("/ip4/{local_ip}/tcp/{listen_port}").parse()?;
     let multiaddr_quic: Multiaddr = format!("/ip4/{local_ip}/udp/{listen_port}/quic-v1").parse()?;
+    
 
     if let Some(ip) = cli.public_ip {
         let ext: Multiaddr = format!("/ip4/{ip}/tcp/{listen_port}").parse()?;
