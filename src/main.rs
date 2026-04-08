@@ -1661,14 +1661,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     if let Some(ip) = cli.public_ip {
         let ext: Multiaddr = format!("/ip4/{ip}/tcp/{listen_port}").parse()?;
-        swarm.add_external_address(ext);
+        let ext_quic: Multiaddr = format!("/ip4/{ip}/udp/{listen_port}/quic-v1").parse()?;
+        swarm.add_external_address(ext.clone());
+        //swarm.listen_on(ext);// this line is new!!!
+        swarm.add_external_address(ext_quic.clone());
+        //swarm.listen_on(ext_quic);// this line is new!!!
     }
     
 
     let _ = swarm.listen_on(multiaddr.clone());
     let _ = swarm.listen_on(multiaddr_quic.clone());
-    swarm.add_external_address(multiaddr.clone());
-    swarm.add_external_address(multiaddr_quic.clone());
+    //swarm.add_external_address(multiaddr.clone());
+    //swarm.add_external_address(multiaddr_quic.clone());
     
     
 
