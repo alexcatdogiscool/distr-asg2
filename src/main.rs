@@ -15,6 +15,7 @@ use libp2p::{
     request_response::{self, Behaviour, ProtocolSupport, cbor::codec::Codec},
     swarm::{self, NetworkBehaviour, SwarmEvent},
     tcp, yamux,
+    identify
 };
 
 use clap::Parser;
@@ -83,6 +84,7 @@ struct MyBehaviour {
     kademlia: KadBehaviour<MemoryStore>,
     gossipsub: gossipsub::Behaviour,
     mdns: mdns::tokio::Behaviour,
+    identify: identify::Behaviour,
 }
 
 
@@ -1286,9 +1288,8 @@ fn is_place_possible(state: &BuildState) -> bool {
 fn draw_ui(frame: &mut Frame, state: &mut AppState) {
 
     let outer_chunks = Layout::horizontal([
-        Constraint::Min(0),
-        Constraint::Max(80),
-        Constraint::Length(3),
+        Constraint::Percentage(30),
+        Constraint::Percentage(70),
     ]).split(frame.area());// the whole area
 
     let topic_chunks = Layout::vertical([
@@ -1664,6 +1665,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
             };
 
+            // identify
+            let identify = identify::Behaviour::new(
+                identify::Config::new("/peerboard/identify/1.0.0".into(), key.public())
+            );
+
+
             // cfg
             let gossipsub_config = gossipsub::ConfigBuilder::default()
                 .heartbeat_interval(Duration::from_secs(10))
@@ -1690,6 +1697,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 kademlia,
                 gossipsub,
                 mdns,
+                identify
             }
         })?
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(1000)))
