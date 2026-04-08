@@ -736,6 +736,26 @@ async fn run_tui(
             // all swarm stuff
             event = swarm.select_next_some() => {
                 match event {
+
+                    // mDNS stuff
+                    SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdnsEvent)) => {
+                        match mdnsEvent {
+                            mdns::Event::Discovered(list) => {
+                                for (peer_id, _addr) in list {
+                                    swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+                                }
+                            }
+
+                            mdns::Event::Expired(list) => {
+                                for (peer_id, _addr) in list {
+                                    swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
+                                }
+                            }
+
+                            _ => {}
+                        }
+                    }
+                    
                     
                     // gossipsub listen
                     SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
@@ -853,6 +873,7 @@ async fn run_tui(
                                     continue;
                                 }
                                 rend.seeking_peers.push(peer_id);// add peers seeking peers to the list (super cool patern matching!!)
+                                swarm.dial(peer_id)?;
                             }
                         }
                         
