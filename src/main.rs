@@ -1119,6 +1119,14 @@ async fn run_tui(
                         match kad_event {
                             libp2p::kad::Event::RoutingUpdated { peer, addresses, .. } => {
 
+                                // DEBUG
+                                state.messages.push(DisplayMessage {
+                                    nickname: "KAD".to_string(),
+                                    peer_id: "local".to_string(),
+                                    content: format!("routing table updated: peer={}, addrs={:?}", peer, addresses),
+                                    timestamp: 0,
+                                });
+
                                 for addr in addresses.iter() {
                                     let _ = swarm.dial(
                                         libp2p::swarm::dial_opts::DialOpts::peer_id(peer)
@@ -1185,6 +1193,8 @@ async fn run_tui(
                                 }
                             }
 
+
+
                             _ => {
                                 state.messages.push(DisplayMessage {
                                     nickname: "KAD".to_string(),
@@ -1196,7 +1206,16 @@ async fn run_tui(
                         }
                     }
 
-                    
+                    SwarmEvent::NewListenAddr { address, .. } => {
+                        state.messages.push(DisplayMessage {
+                            nickname: "SYSTEM".to_string(),
+                            peer_id: "local".to_string(),
+                            content: format!("Listening on: {}", address),
+                            timestamp: 0,
+                        });
+                        // tell kademlia about this listen address too
+                        swarm.behaviour_mut().kademlia.add_address(&state.my_peer_id, address);
+                    }
 
 
                     SwarmEvent::ConnectionEstablished { peer_id, .. } => {
