@@ -1042,10 +1042,18 @@ async fn run_tui(
                         
                     }
 
-                    //      DEBUG!!!
+                    SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(
+                        libp2p::kad::Event::RoutingUpdated { peer, .. }
+                    )) => {
+                        swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer);
+                    }
+
                     SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                         state.total_connections += 1;
+                        swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                     }
+
+                    //      DEBUG!!!
 
                     SwarmEvent::Dialing { peer_id, connection_id } => {
                         if peer_id.unwrap().to_string().eq("12D3KooWGKMA97YjCEVcTwpURweCVjBoYaYS1YN5h6veUKmBct8f") ||
@@ -1668,8 +1676,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let local_ip = local_ip().unwrap();
 
-    let multiaddr: Multiaddr = format!("/ip4/{local_ip}/tcp/{listen_port}").parse()?;
-    let multiaddr_quic: Multiaddr = format!("/ip4/{local_ip}/udp/{listen_port}/quic-v1").parse()?;
+    let multiaddr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{listen_port}").parse()?;
+    let multiaddr_quic: Multiaddr = format!("/ip4/0.0.0.0/udp/{listen_port}/quic-v1").parse()?;
     
 
     if let Some(ip) = cli.public_ip {
