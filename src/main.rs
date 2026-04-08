@@ -753,38 +753,7 @@ async fn run_tui(
 
                     
 
-                    SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(libp2p::kad::Event::OutboundQueryProgressed { result, .. })) => {
-                        match result {
-                            libp2p::kad::QueryResult::GetClosestPeers(Ok(ok)) => {
-                                state.messages.push(DisplayMessage {
-                                    nickname: "KAD".to_string(),
-                                    peer_id: "local".to_string(),
-                                    content: format!("got closestPeer OK"),
-                                    timestamp: 0,
-                                });
-                                for peer in ok.peers {
-                                    state.messages.push(DisplayMessage {
-                                        nickname: "KAD".to_string(),
-                                        peer_id: "local".to_string(),
-                                        content: format!("got here!"),
-                                        timestamp: 0,
-                                    });
-                                    for addr in peer.addrs {
-                                        swarm.behaviour_mut().kademlia.add_address(&peer.peer_id, addr.clone());
-                                        // DEBUG
-                                        state.messages.push(DisplayMessage {
-                                            nickname: "KAD".to_string(),
-                                            peer_id: "local".to_string(),
-                                            content: format!("added peer_id {}, and addr: {}", peer.peer_id, addr),
-                                            timestamp: 0,
-                                        });
-                                    }
-                                }
-                            }
-
-                            _ => {}
-                        }
-                    }
+                    
 
                     
                     
@@ -1083,29 +1052,96 @@ async fn run_tui(
                         
                     }
 
-                    SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(
-                        libp2p::kad::Event::RoutingUpdated { peer, addresses, .. }
-                    )) => {
+                    SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(kad_event)) => {
+                        match kad_event {
+                            libp2p::kad::Event::RoutingUpdated { peer, addresses, .. } => {
+                                let record_key = libp2p::kad::RecordKey::new(&peer.to_bytes());
+                                swarm.behaviour_mut().kademlia.get_record(record_key);
 
-                        let record_key = libp2p::kad::RecordKey::new(&peer.to_bytes());
-                        swarm.behaviour_mut().kademlia.get_record(record_key);
+                                for addr in addresses.iter() {
+                                    let _ = swarm.dial(
+                                        libp2p::swarm::dial_opts::DialOpts::peer_id(peer)
+                                            .addresses(addresses.iter().cloned().collect())
+                                            .build()
+                                    );
+                                    swarm.behaviour_mut().kademlia.add_address(&peer, addr.clone());
+                                }
+                                swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer);
+                            }
 
-                        for addr in addresses.iter() {
-                            let _ = swarm.dial(
-                                libp2p::swarm::dial_opts::DialOpts::peer_id(peer)
-                                    .addresses(addresses.iter().cloned().collect())
-                                    .build()
-                            );
-                            break;
+                            libp2p::kad::Event::OutboundQueryProgressed {result, ..} => {
+                                match result {
+                                    libp2p::kad::QueryResult::GetClosestPeers(Ok(ok)) => {
+                                        state.messages.push(DisplayMessage {
+                                            nickname: "KAD".to_string(),
+                                            peer_id: "local".to_string(),
+                                            content: format!("got closestPeer OK"),
+                                            timestamp: 0,
+                                        });
+                                        for peer in ok.peers {
+                                            state.messages.push(DisplayMessage {
+                                                nickname: "KAD".to_string(),
+                                                peer_id: "local".to_string(),
+                                                content: format!("got here!"),
+                                                timestamp: 0,
+                                            });
+                                            for addr in peer.addrs.clone() {
+                                                swarm.behaviour_mut().kademlia.add_address(&peer.peer_id, addr.clone());
+                                                // DEBUG
+                                                state.messages.push(DisplayMessage {
+                                                    nickname: "KAD".to_string(),
+                                                    peer_id: "local".to_string(),
+                                                    content: format!("added peer_id {}, and addr: {}", peer.peer_id, addr),
+                                                    timestamp: 0,
+                                                });
+                                            }
+                                            let _ = swarm.dial(
+                                                libp2p::swarm::dial_opts::DialOpts::peer_id(peer.peer_id)
+                                                    .addresses(peer.addrs)
+                                                    .build()
+                                            );
+                                            swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer.peer_id);
+                                        }
+                                    }
+
+                                    libp2p::kad::QueryResult::Bootstrap(Ok(result)) => {
+                                        if result.num_remaining == 0 {
+                                            swarm.behaviour_mut().kademlia.get_closest_peers(state.my_peer_id);
+                                        }
+                                    }
+
+                                    _ => {}
+                                }
+                            }
+
+                            _ => {
+                                state.messages.push(DisplayMessage {
+                                    nickname: "KAD".to_string(),
+                                    peer_id: "local".to_string(),
+                                    content: format!("{:?}", kad_event),
+                                    timestamp: 0
+                                });
+                            }
                         }
-                        swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer);
-
                     }
+
+                    
+
 
                     SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                         state.total_connections += 1;
                         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
-                        swarm.behaviour_mut().kademlia.get_closest_peers(state.my_peer_id);
+                        if peer_id.to_string() == BOOTSTRAP_PEER_ID {
+                            state.messages.push(DisplayMessage {
+                                nickname: "BOOTSTRAP".to_string(),
+                                peer_id: "local".to_string(),
+                                content: format!("Bootstrap connection established"),
+                                timestamp: 0,
+                            });
+                            swarm.behaviour_mut().kademlia.get_closest_peers(state.my_peer_id);
+                            swarm.behaviour_mut().kademlia.bootstrap();
+                        }
+                        
                     }
 
                     
@@ -1747,7 +1783,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         };
 
         swarm.behaviour_mut().kademlia.add_address(&bootstrap_peer_id, bootstrap_multiaddr.clone());
-        swarm.behaviour_mut().kademlia.bootstrap();
         
         swarm.dial(bootstrap_multiaddr)?;
         // self lookup!!! v
