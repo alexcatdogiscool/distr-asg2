@@ -1793,6 +1793,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
                 // swam match
                 event = swarm.select_next_some() => match event {
+
+                    SwarmEvent::Dialing { peer_id, connection_id } => {
+                        println!("Dialing {peer_id:?}");
+                    }
+
+                    SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                        println!("FAILED to dial {peer_id:?}: {error}");
+                    }
+
                     // listening on ...
                     SwarmEvent::NewListenAddr { address, .. } => {
                         println!("Listening on addr: {address}");
