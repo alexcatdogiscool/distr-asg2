@@ -143,6 +143,18 @@ enum GameState {
     BATTLE(BattleState),
     ACCEPT(AcceptDecline),
     BUILD(BuildState),
+    FINISHED(FinishedState),
+}
+
+enum GameResult {
+    WON,
+    LOST,
+    RESIGN,
+}
+
+struct FinishedState {
+    result: GameResult,
+    time: std::time::Instant,
 }
 
 struct AcceptDecline {
@@ -152,10 +164,34 @@ struct AcceptDecline {
     channel: Option<request_response::ResponseChannel<Vec<u8>>>,
 }
 
+#[derive(Clone, Copy)]
+struct filledBoard {
+    board: [[Ship;10];10],
+}
+
+#[derive(Clone, Copy)]
+struct guessBoard {
+    board: [[bool;10];10],
+}
+
+impl filledBoard {
+    pub fn new() -> Self {
+        filledBoard { board: [[Ship::None;10];10] }
+    }
+}
+
+impl guessBoard {
+    pub fn new() -> Self {
+        guessBoard { board: [[false;10];10] }
+    }
+}
+
+
+
 struct BuildState {
     opponent_peer_id: PeerId,
     opponent_nickname: String,
-    my_board: [[bool; 10];10],
+    my_board: filledBoard,
     current_ship: Ship,
     cursor: [i32;2],
     is_placing: bool,
@@ -170,22 +206,22 @@ impl BuildState {
         match self.placing_cursor {
             QuadDirection::UP => {
                 for r in (self.cursor[1] - (self.current_ship.length() as i32 - 1))..=self.cursor[1] {
-                    self.my_board[r as usize][self.cursor[0] as usize] = true;
+                    self.my_board.board[r as usize][self.cursor[0] as usize] = self.current_ship;
                 }
             }
             QuadDirection::RIGHT => {
                 for c in self.cursor[0]..self.cursor[0] + self.current_ship.length() as i32 {
-                    self.my_board[self.cursor[1] as usize][c as usize] = true;
+                    self.my_board.board[self.cursor[1] as usize][c as usize] = self.current_ship;
                 }
             }
             QuadDirection::DOWN => {
                 for r in self.cursor[1]..self.cursor[1] + self.current_ship.length() as i32 {
-                    self.my_board[r as usize][self.cursor[0] as usize] = true;
+                    self.my_board.board[r as usize][self.cursor[0] as usize] = self.current_ship;
                 }
             }
             QuadDirection::LEFT => {
                 for c in (self.cursor[0] - (self.current_ship.length() as i32 - 1))..=self.cursor[0] {
-                    self.my_board[self.cursor[1] as usize][c as usize] = true;
+                    self.my_board.board[self.cursor[1] as usize][c as usize] = self.current_ship;
                 }
             }
         }
@@ -200,7 +236,7 @@ enum QuadDirection {
     RIGHT,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone, Copy)]
 enum Ship {
     CARRIER,
     BATTLESHIP,
@@ -224,7 +260,7 @@ impl Ship {
 
     fn next(&self) -> Ship {
         match self {
-            Ship::CARRIER => Ship::BATTLESHIP,
+            Ship::CARRIER => Ship::None,//Ship::BATTLESHIP,
             Ship::BATTLESHIP => Ship::CRUISER,
             Ship::CRUISER => Ship::SUBMARINE,
             Ship::SUBMARINE => Ship::DESTROYER,
@@ -232,22 +268,54 @@ impl Ship {
             Ship::None => Ship::None
         }
     }
+
+    fn ship_to_string(&self) -> String {
+        match self {
+            Ship::CARRIER => "[C]".to_string(),
+            Ship::BATTLESHIP => "[B]".to_string(),
+            Ship::CRUISER => "[c]".to_string(),
+            Ship::SUBMARINE => "[S]".to_string(),
+            Ship::DESTROYER => "[D]".to_string(),
+            Ship::None => "[ ]".to_string()
+        }
+    }
 }
 
+fn was_ship_sunk(board: [[Ship;10];10], ship: Ship) -> bool {
+
+    for r in board.iter() {
+        for c in r.iter() {
+            if *c == ship {
+                return false;
+            }
+        }
+    }
+    true
+
+
+}
+
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HitState {
+    Hit,
+    Miss,
+    None,
+}
 
 struct BattleState {
     opponent_peer_id: PeerId,
     opponent_nickname: String,
-    my_board: [[bool; 10];10],
-    their_board: [[bool; 10];10],
-    my_shots: [[bool;10];10],
-    their_shots: [[bool;10];10],
+    my_board: filledBoard,
+    my_shots: [[HitState;10];10],
+    their_shots: [[HitState;10];10],
     my_turn: bool,
     shot_seq: u32,
     phase: BattlePhase,
     cursor: [i32;2],
     am_challenger: bool,
     pening_shot: Option<[usize;2]>,
+    ships_sunk: u8,
 }
 
 #[derive(Clone)]
@@ -356,15 +424,32 @@ async fn run_tui(
                         GameState::BUILD(build) => {
                             draw_build(frame, state);
                         }
+                        GameState::FINISHED(finished) => {
+                            draw_finished(frame, state);
+                            
+                        }
                     };
                     
                 })?;
+
+                match &mut state.game_state {
+                    GameState::FINISHED(finished) => {
+                        let len = std::time::Instant::now() - finished.time;
+                        if len.as_secs() > 3 {
+                            // go back to messaging!
+                            state.game_state = GameState::MESSAGE;
+                        }
+                    }
+                    _ => {}
+                }
 
                 while event::poll(Duration::from_millis(0))? {
                     if let Event::Key(key) = event::read()? {
                         // handle all the key presses
 
                         match &mut state.game_state {
+                            // finished game
+                            
                             // messaging
                             GameState::MESSAGE => {
                                 match key.code {
@@ -422,14 +507,7 @@ async fn run_tui(
                                                 state.game_state = GameState::RENDEZVOUS(RendezvousState { seeking_peers: vec![], refresh: false, selected: None });
                                                 // register to the rendezvous node
 
-                                                // DEBUG
-                                                let ext_addrs: Vec<Multiaddr> = swarm.external_addresses().cloned().collect();
-                                                state.messages.push(DisplayMessage {
-                                                    nickname: "DEBUG".to_string(),
-                                                    peer_id: "local".to_string(),
-                                                    content: format!("external addrs at register time: {:?}", ext_addrs),
-                                                    timestamp: 0,
-                                                });
+                                                
 
                                                 
 
@@ -505,6 +583,7 @@ async fn run_tui(
                             }
                             // battle
                             GameState::BATTLE(battle) => {
+
                                 match key.code {
                                     KeyCode::Up => {
                                         battle.cursor[1] = 0.max(battle.cursor[1] - 1);
@@ -521,7 +600,7 @@ async fn run_tui(
 
                                     
                                     KeyCode::Enter => {
-                                        if battle.phase == BattlePhase::MyTurn {//fire a shot
+                                        if battle.phase == BattlePhase::MyTurn && battle.my_shots[battle.cursor[1] as usize][battle.cursor[0] as usize] == HitState::None {//fire a shot
                                             battle.pening_shot = Some([battle.cursor[1] as usize, battle.cursor[0] as usize]);
                                             //battle.my_shots[battle.cursor[1] as usize][battle.cursor[0] as usize] = true;
                                             battle.phase = BattlePhase::WaitingForOpponent;
@@ -613,7 +692,7 @@ async fn run_tui(
                                                 state.game_state = GameState::BUILD(BuildState {
                                                     opponent_peer_id: acpt.peer.as_ref().unwrap().peer_id,
                                                     opponent_nickname: acpt.peer.as_ref().unwrap().nickname.clone(),// hell
-                                                    my_board: [[false;10];10],
+                                                    my_board: filledBoard::new(),
                                                     current_ship: Ship::CARRIER,
                                                     cursor: [0;2],
                                                     is_placing: false,
@@ -724,23 +803,23 @@ async fn run_tui(
                                         // request BoardReady
                                         let request = BattleshipRequest { msg: Some(battleship_request::Msg::BoardReady(BoardReady {})) };// ???
                                         let mut buf = vec![];
-                                        request.encode(&mut buf);
+                                        request.encode(&mut buf)?;
                                         swarm.behaviour_mut().battleship.send_request(&build.opponent_peer_id, buf);
 
                                         // move into battle state
                                         state.game_state = GameState::BATTLE(BattleState {
                                             opponent_peer_id: build.opponent_peer_id,
                                             opponent_nickname: build.opponent_nickname.clone(),
-                                            my_board: build.my_board,
-                                            their_board: [[false;10];10],
-                                            my_shots: [[false;10];10],
-                                            their_shots: [[false;10];10],
+                                            my_board: build.my_board.clone(),
+                                            my_shots: [[HitState::None;10];10],
+                                            their_shots: [[HitState::None;10];10],
                                             my_turn: true,
                                             shot_seq: 0,
                                             phase: BattlePhase::MyTurn,
                                             cursor: build.cursor,
                                             am_challenger: true,
                                             pening_shot: None,
+                                            ships_sunk: 0,
                                         });
                                     }// else wait for BoardReady request
                                 }
@@ -876,7 +955,7 @@ async fn run_tui(
                                 state.game_state = GameState::BUILD(BuildState {
                                     opponent_peer_id: peer,
                                     opponent_nickname: "idk".to_string(),
-                                    my_board: [[false;10];10],
+                                    my_board: filledBoard::new(),
                                     current_ship: Ship::CARRIER,
                                     cursor: [0,0],
                                     is_placing: false,
@@ -912,6 +991,9 @@ async fn run_tui(
 
                         // game logic stuff
                     // incoming request
+
+                    
+
                     SwarmEvent::Behaviour(MyBehaviourEvent::Battleship(
                         request_response::Event::Message {
                             peer,
@@ -939,15 +1021,15 @@ async fn run_tui(
                                                     opponent_peer_id: build.opponent_peer_id,
                                                     opponent_nickname: build.opponent_nickname.clone(),
                                                     my_board: build.my_board,
-                                                    their_board: [[false;10];10],
-                                                    my_shots: [[false;10];10],
-                                                    their_shots: [[false;10];10],
+                                                    my_shots: [[HitState::None;10];10],
+                                                    their_shots: [[HitState::None;10];10],
                                                     my_turn: false,
                                                     shot_seq: 0,
                                                     phase: BattlePhase::WaitingForOpponent,
                                                     cursor: build.cursor,
                                                     am_challenger: false,
                                                     pening_shot: None,
+                                                    ships_sunk: 0,
                                                 })
                                             }
                                         }
@@ -959,23 +1041,23 @@ async fn run_tui(
                                             battle.phase = BattlePhase::MyTurn;
                                             battle.shot_seq = shot.seq + 1;
                                             
-                                            battle.their_shots[shot.row as usize][shot.col as usize] = true;
-                                            
+                                            battle.their_shots[shot.row as usize][shot.col as usize] = HitState::Miss;
                                             // checkif the shot was a hit
-                                            if battle.my_board[shot.row as usize][shot.col as usize] {
+                                            if battle.my_board.board[shot.row as usize][shot.col as usize] != Ship::None {
                                                 
                                                 // it hit
-                                                // set this cell to false so it cant be hit again
-                                                battle.my_board[shot.row as usize][shot.col as usize] = false;
+                                                battle.their_shots[shot.row as usize][shot.col as usize] = HitState::Hit;
 
-                                                // was this ship sunk?
-                                                // FUUUUUUUUCK gotta re-write the whole jit
+                                                // what did they hit?
+                                                let shipType = battle.my_board.board[shot.row as usize][shot.col as usize].clone();
+                                                // set this cell to false so it cant be hit again
+                                                battle.my_board.board[shot.row as usize][shot.col as usize] = Ship::None;
 
                                                 // did i just lose?
                                                 let mut am_alive: bool = false;
-                                                for r in battle.my_board.iter() {
+                                                for r in battle.my_board.board.iter() {
                                                     for c in r.iter() {
-                                                        if *c {
+                                                        if *c != Ship::None {
                                                             am_alive = true;
                                                             break;
                                                         }
@@ -985,16 +1067,32 @@ async fn run_tui(
                                                     }
                                                 }
 
+                                                // was this ship sunk?
+                                                let sunk = was_ship_sunk(battle.my_board.board, shipType);
+                                                    // send them back the sunk msg
+                                                
+
                                                 // send hit response
                                                 let response = BattleshipResponse {msg: Some(battleship_response::Msg::ShotResult(ShotResult{
                                                     seq: battle.shot_seq,
                                                     hit: true,
-                                                    sunk: false,
+                                                    sunk: sunk,
                                                     won: !am_alive,
                                                 }))};
                                                 let mut buf = vec![];
                                                 response.encode(&mut buf);
                                                 swarm.behaviour_mut().battleship.send_response(channel, buf);
+
+                                                // if i lost
+                                                // send resign and stuff
+                                                if !am_alive {
+                                                    let mesg = BattleshipRequest {msg: Some(battleship_request::Msg::Resign(Resign{}))};
+                                                    let mut buf = vec![];
+                                                    mesg.encode(&mut buf);
+                                                    swarm.behaviour_mut().battleship.send_request(&battle.opponent_peer_id, buf);
+                                                }
+                                                
+                                                
 
 
                                             } else {
@@ -1013,15 +1111,57 @@ async fn run_tui(
                                         }
                                     }
 
+                                    BattleShip::battleship_request::Msg::Resign(res) => {
+                                        // send resignAck
+                                        let response = BattleshipResponse {msg: Some(battleship_response::Msg::ResignAck(ResignAck{}))};
+                                        let mut buf = vec![];
+                                        response.encode(&mut buf);
+                                        swarm.behaviour_mut().battleship.send_response(channel, buf);
+                                        // end the game
+                                        state.game_state = GameState::FINISHED(FinishedState {
+                                            result: GameResult::WON,
+                                            time: std::time::Instant::now()
+                                        });
+
+                                    }
+
+                                    
+
                                     _ => {}
                                 }
                                 
                             }
 
+                            
+
                             _ => {}
                         }
 
                     }
+
+                    SwarmEvent::Behaviour(MyBehaviourEvent::Battleship(
+                        request_response::Event::OutboundFailure {
+                            ..
+                        }
+                    )) => {
+                        //didnt recieve a response within 30 seconds
+                        // resign
+
+                        if let GameState::BATTLE(battle) = &mut state.game_state {
+                            let response = BattleshipRequest { msg: Some(battleship_request::Msg::Resign(Resign {  })) };
+                            let mut buf = vec![];
+                            response.encode(&mut buf)?;
+                            swarm.behaviour_mut().battleship.send_request(&battle.opponent_peer_id, buf);
+                        }
+                        // end the game (resigned)
+                        state.game_state = GameState::FINISHED(FinishedState {
+                            result: GameResult::WON,
+                            time: std::time::Instant::now(),
+                        });
+
+                        
+                    }
+
                     // icoming response
                     SwarmEvent::Behaviour(MyBehaviourEvent::Battleship(
                         request_response::Event::Message {
@@ -1045,19 +1185,31 @@ async fn run_tui(
                                         }) => {
                                             // shot result received
                                             if let Some([row, col]) = battle.pening_shot.take() {
-                                                battle.my_shots[row][col] = true;
+                                                battle.my_shots[row][col] = HitState::Miss;
                                                 if hit {
-                                                    battle.their_board[row][col] = true;
+                                                    battle.my_shots[row][col] = HitState::Hit;
+                                                }
+                                                if sunk {
+                                                    // display a message
+                                                    battle.ships_sunk += 1;
                                                 }
                                                 if won {
                                                     // i just won
-                                                    todo!();
+                                                    battle.phase = BattlePhase::GameOver { i_won: true };
                                                 }
                                             }
                                             battle.shot_seq = seq;
                                             battle.phase = BattlePhase::WaitingForOpponent;
                                         }
 
+                                        // recived resignAck
+                                        BattleShip::battleship_response::Msg::ResignAck(ack) => {
+                                            // recieved a resignAck
+                                            state.game_state = GameState::FINISHED(FinishedState {
+                                                result: GameResult::LOST,
+                                                time: std::time::Instant::now()
+                                            });
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -1068,23 +1220,13 @@ async fn run_tui(
                     }
 
                     SwarmEvent::ExternalAddrConfirmed { address } => {
-                        state.messages.push(DisplayMessage {
-                            nickname: "EXTERNAL".to_string(),
-                            peer_id: "local".to_string(),
-                            content: format!("my confirmed external addr: {}", address),
-                            timestamp: 0,
-                        });
+                        
                         // make sure kademlia knows this is us
                         swarm.behaviour_mut().kademlia.add_address(&state.my_peer_id, address);
                     }
 
                     SwarmEvent::NewExternalAddrCandidate { address } => {
-                        state.messages.push(DisplayMessage {
-                            nickname: "EXTERNAL".to_string(),
-                            peer_id: "local".to_string(),
-                            content: format!("a candidate external addr: {}", address),
-                            timestamp: 0,
-                        });
+                        
                         // make sure kademlia knows this is us
                         swarm.add_external_address(address.clone());
                         swarm.behaviour_mut().kademlia.add_address(&state.my_peer_id, address);
@@ -1092,16 +1234,7 @@ async fn run_tui(
 
                     
 
-                    SwarmEvent::Behaviour(MyBehaviourEvent::Identify(
-                        libp2p::identify::Event::Sent { peer_id, .. }
-                    )) => {
-                        state.messages.push(DisplayMessage {
-                            nickname: "IDENTIFY".to_string(),
-                            peer_id: "local".to_string(),
-                            content: format!("sent identify info to {}", peer_id),
-                            timestamp: 0,
-                        });
-                    }
+                    
 
                     SwarmEvent::Behaviour(MyBehaviourEvent::Identify(
                         libp2p::identify::Event::Received { peer_id, info, .. }
@@ -1139,13 +1272,7 @@ async fn run_tui(
                         match kad_event {
                             libp2p::kad::Event::RoutingUpdated { peer, addresses, .. } => {
 
-                                // DEBUG
-                                state.messages.push(DisplayMessage {
-                                    nickname: "KAD".to_string(),
-                                    peer_id: "local".to_string(),
-                                    content: format!("routing table updated: peer={}, addrs={:?}", peer, addresses),
-                                    timestamp: 0,
-                                });
+                                
 
                                 for addr in addresses.iter() {
                                     let _ = swarm.dial(
@@ -1162,28 +1289,12 @@ async fn run_tui(
                             libp2p::kad::Event::OutboundQueryProgressed {result, id, ..} => {
                                 match result {
                                     libp2p::kad::QueryResult::GetClosestPeers(Ok(ok)) => {
-                                        state.messages.push(DisplayMessage {
-                                            nickname: "KAD".to_string(),
-                                            peer_id: "local".to_string(),
-                                            content: format!("got closestPeer OK. id: {}", id),
-                                            timestamp: 0,
-                                        });
+                                        
                                         for peer in ok.peers {
-                                            state.messages.push(DisplayMessage {
-                                                nickname: "KAD".to_string(),
-                                                peer_id: "local".to_string(),
-                                                content: format!("got here!"),
-                                                timestamp: 0,
-                                            });
+                                            
                                             for addr in peer.addrs.clone() {
                                                 swarm.behaviour_mut().kademlia.add_address(&peer.peer_id, addr.clone());
-                                                // DEBUG
-                                                state.messages.push(DisplayMessage {
-                                                    nickname: "KAD".to_string(),
-                                                    peer_id: "local".to_string(),
-                                                    content: format!("added peer_id {}, and addr: {}", peer.peer_id, addr),
-                                                    timestamp: 0,
-                                                });
+                                                
                                             }
                                             let _ = swarm.dial(
                                                 libp2p::swarm::dial_opts::DialOpts::peer_id(peer.peer_id)
@@ -1195,12 +1306,7 @@ async fn run_tui(
                                     }
 
                                     libp2p::kad::QueryResult::GetClosestPeers(Err(e)) => {
-                                        state.messages.push(DisplayMessage {
-                                            nickname: "KAD".to_string(),
-                                            peer_id: "local".to_string(),
-                                            content: format!("got closestPeer Err. id: {}, error: {}", id, e),
-                                            timestamp: 0,
-                                        });
+                                        
                                     }
 
                                     libp2p::kad::QueryResult::Bootstrap(Ok(result)) => {
@@ -1216,26 +1322,13 @@ async fn run_tui(
 
 
                             _ => {
-                                state.messages.push(DisplayMessage {
-                                    nickname: "KAD".to_string(),
-                                    peer_id: "local".to_string(),
-                                    content: format!("{:?}", kad_event),
-                                    timestamp: 0
-                                });
+                                
                             }
                         }
                     }
 
                     SwarmEvent::NewListenAddr { address, .. } => {
-                        state.messages.push(DisplayMessage {
-                            nickname: "SYSTEM".to_string(),
-                            peer_id: "local".to_string(),
-                            content: format!("Listening on: {}", address),
-                            timestamp: 0,
-                        });
-                        for comp in address.iter() {
-                            
-                        }
+                        
                         
                         // tell kademlia about this listen address too
                         swarm.add_external_address(address.clone());
@@ -1246,12 +1339,7 @@ async fn run_tui(
                     SwarmEvent::ConnectionEstablished { peer_id, .. } => {
 
                         let ext_addrs: Vec<Multiaddr> = swarm.external_addresses().cloned().collect();
-                        state.messages.push(DisplayMessage {
-                            nickname: "DEBUG".to_string(),
-                            peer_id: "local".to_string(),
-                            content: format!("external addrs: {:?}", ext_addrs),
-                            timestamp: 0,
-                        });
+                        
 
                         for addr in swarm.external_addresses().cloned().collect::<Vec<_>>() {
                             swarm.behaviour_mut().kademlia.add_address(&state.my_peer_id, addr);
@@ -1267,58 +1355,17 @@ async fn run_tui(
 
                         if peer_id.to_string() == BOOTSTRAP_PEER_ID {
 
-                            state.messages.push(DisplayMessage {
-                                nickname: "BOOTSTRAP".to_string(),
-                                peer_id: "local".to_string(),
-                                content: format!("Bootstrap connection established"),
-                                timestamp: 0,
-                            });
+                            
                             swarm.behaviour_mut().kademlia.get_closest_peers(state.my_peer_id);
                             let res = swarm.behaviour_mut().kademlia.bootstrap();
-                            match res {
-                                Ok(ok) => {
-                                    state.messages.push(DisplayMessage {
-                                        nickname: "BOOTSTRAP".to_string(),
-                                        peer_id: "local".to_string(),
-                                        content: format!("Bootstrap success id: {}", ok),
-                                        timestamp: 0,
-                                    });
-                                }
-                                Err(e) => {
-                                    state.messages.push(DisplayMessage {
-                                        nickname: "BOOTSTRAP".to_string(),
-                                        peer_id: "local".to_string(),
-                                        content: format!("Bootstrap error {:?}", e),
-                                        timestamp: 0,
-                                    });
-                                }
-                            }
+                            
                         }
                         
                     }
 
                     
 
-                    //      DEBUG!!!
-
-                    SwarmEvent::NewListenAddr { address, .. } => {
-                        // display this in your TUI messages list as a debug message
-                        state.messages.push(DisplayMessage {
-                            nickname: "SYSTEM".to_string(),
-                            peer_id: "local".to_string(),
-                            content: format!("Listening on: {}", address),
-                            timestamp: 0,
-                        });
-                    }
-
-                    SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(e)) => {
-                        state.messages.push(DisplayMessage {
-                            nickname: "KAD".to_string(),
-                            peer_id: "local".to_string(),
-                            content: format!("{:?}", e),
-                            timestamp: 0
-                        });
-                    }
+                    
 
                     
 
@@ -1365,13 +1412,13 @@ fn is_place_possible(state: &BuildState) -> bool {
         return false;
     }
 
-    fn collision(board: [[bool;10];10], here: [i32;2], direction: &QuadDirection, len: usize) -> bool {
+    fn collision(board: [[Ship;10];10], here: [i32;2], direction: &QuadDirection, len: usize) -> bool {
         match direction {
             QuadDirection::UP => {
                 for i in 0..len {
                     let row = here[1] - i as i32;
                     let col = here[0];
-                    if board[row as usize][col as usize] {
+                    if board[row as usize][col as usize] != Ship::None {
                         return true;
                     }
                 }
@@ -1381,7 +1428,7 @@ fn is_place_possible(state: &BuildState) -> bool {
                 for i in 0..len {
                     let row = here[1] + i as i32;
                     let col = here[0];
-                    if board[row as usize][col as usize] {
+                    if board[row as usize][col as usize] != Ship::None {
                         return true;
                     }
                 }
@@ -1391,7 +1438,7 @@ fn is_place_possible(state: &BuildState) -> bool {
                 for i in 0..len {
                     let row = here[1];
                     let col = here[0] + i as i32;
-                    if board[row as usize][col as usize] {
+                    if board[row as usize][col as usize] != Ship::None {
                         return true;
                     }
                 }
@@ -1401,7 +1448,7 @@ fn is_place_possible(state: &BuildState) -> bool {
                 for i in 0..len {
                     let row = here[1];
                     let col = here[0] - i as i32;
-                    if board[row as usize][col as usize] {
+                    if board[row as usize][col as usize] != Ship::None {
                         return true;
                     }
                 }
@@ -1428,7 +1475,7 @@ fn is_place_possible(state: &BuildState) -> bool {
     }
 
     return !(out_of_bounds(state.cursor, &state.placing_cursor, state.current_ship.length() as usize)
-            || collision(state.my_board, state.cursor, &state.placing_cursor, state.current_ship.length() as usize));
+            || collision(state.my_board.board, state.cursor, &state.placing_cursor, state.current_ship.length() as usize));
 
 }
 
@@ -1603,12 +1650,39 @@ fn draw_proposition(frame: &mut Frame, state: &mut AppState) {
 
 fn draw_build(frame: &mut Frame, state: &mut AppState) {
     if let GameState::BUILD(build) = &state.game_state {
+
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(33),
+                Constraint::Percentage(33),
+                Constraint::Percentage(34),
+            ])
+            .split(frame.area());
+
+        // board stuff
         let board_str = draw_board(&build);
 
         let board = Paragraph::new(board_str)
-            .block(Block::bordered().title("Place your ships"));
+            .block(Block::new().title("Place your ships"));
+        
+        // peices to place
+        let mut remaining_peices = String::new();
+        let mut current: Ship = build.current_ship;
+        while current != Ship::None {
+            for i in 0..current.length() {
+                remaining_peices.push_str(&current.ship_to_string());
+            }
+            remaining_peices.push('\n');
+            current = current.next();
+        }
 
-        frame.render_widget(board, frame.area());
+        let remaining = Paragraph::new(remaining_peices)
+            .block(Block::new().title("remaining ships to place"));
+
+        frame.render_widget(board, chunks[1]);
+        frame.render_widget(remaining, chunks[2]);
+        
     }
     
 }
@@ -1616,6 +1690,17 @@ fn draw_build(frame: &mut Frame, state: &mut AppState) {
 
 fn draw_battle(frame: &mut Frame, state: &mut AppState) {
     if let GameState::BATTLE(battle) = &state.game_state {
+
+        let outer_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(33),
+                Constraint::Percentage(33),
+                Constraint::Percentage(34),
+            ]).split(frame.area());
+
+        
+        // game boards
         let (my_board_str, their_board_str) = draw_board_battle(&battle);
 
         let my_board = Paragraph::new(my_board_str)
@@ -1623,22 +1708,32 @@ fn draw_battle(frame: &mut Frame, state: &mut AppState) {
         let their_board = Paragraph::new(their_board_str)
             .block(Block::bordered().title("Their board"));
 
-        let chunks = Layout::default()
+        let battle_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Percentage(50),
                 Constraint::Percentage(50)
             ])
-            .split(frame.area());
+            .split(outer_chunks[1]);
 
-        frame.render_widget(their_board, chunks[0]);
-        frame.render_widget(my_board, chunks[1]);
+        // stats!!
+        // turn number, ships sunk
+        
+        let sunk_stat: String = format!("{}/5", battle.ships_sunk);
+        let stats = Paragraph::new(sunk_stat)
+                .block(Block::new().title(format!("STATS | Turn Number: {}", battle.shot_seq)));
+
+
+
+        frame.render_widget(their_board, battle_chunks[0]);
+        frame.render_widget(my_board, battle_chunks[1]);
+        frame.render_widget(stats, outer_chunks[2]);
 
     }
 }
 
 fn draw_board(state: &BuildState) -> String {
-    let board_str: String = state.my_board.iter().enumerate().map(|(r, row)| {
+    let board_str: String = state.my_board.board.iter().enumerate().map(|(r, row)| {
         let row_str: String = row.iter().enumerate().map(|(c, cell)| {
             if state.is_placing {
                 match &state.placing_cursor {
@@ -1674,10 +1769,8 @@ fn draw_board(state: &BuildState) -> String {
             if r == state.cursor[1] as usize && c == state.cursor[0] as usize {
                 "[+]".to_string()
             }
-            else if (*cell) {
-                "[X]".to_string()
-            } else {
-                "[ ]".to_string()
+            else {
+                cell.ship_to_string()
             }
         }).collect();
         row_str + "\n"
@@ -1688,15 +1781,12 @@ fn draw_board(state: &BuildState) -> String {
 }
 
 fn draw_board_battle(state: &BattleState) -> (String, String) {
-    let my_board_str: String = state.my_board.iter().enumerate().map(|(r, row)| {
+    let my_board_str: String = state.my_board.board.iter().enumerate().map(|(r, row)| {
         let row_str: String = row.iter().enumerate().map(|(c, cell)| {
-            if state.their_shots[r][c] {
-                "[O]".to_string()
-            }
-            else if (*cell) {
-                "[X]".to_string()
-            } else {
-                "[ ]".to_string()
+            match state.their_shots[r][c] {
+                HitState::Hit => "[X]".to_string(),
+                HitState::Miss => "[O]".to_string(),
+                HitState::None => state.my_board.board[r][c].ship_to_string(),
             }
         }).collect();
         row_str + "\n"
@@ -1707,20 +1797,48 @@ fn draw_board_battle(state: &BattleState) -> (String, String) {
             if r == state.cursor[1] as usize && c == state.cursor[0] as usize {
                 "[+]".to_string()
             }
-            else if state.their_board[r][c] && *cell {
-                "[X]".to_string()
-            }
-            else if *cell {
-                "[O]".to_string()
-            }
             else {
-                "[ ]".to_string()
+                match state.my_shots[r][c] {
+                    HitState::Hit => "[X]".to_string(),
+                    HitState::Miss => "[O]".to_string(),
+                    HitState::None => "[ ]".to_string(),
+                }
             }
         }).collect();
         row_str + "\n"
     }).collect();
 
     return (my_board_str, their_board_str);
+}
+
+fn draw_finished(frame: &mut Frame, state: &mut AppState) {
+    if let GameState::FINISHED(finished) = &mut state.game_state {
+        let msg = match finished.result {
+            GameResult::WON => "YOU WON!".to_string(),
+            GameResult::LOST => "YOU LOST :(".to_string(),
+            GameResult::RESIGN => "YOU RESIGNED".to_string(),
+        };
+
+        let outer_chunks = Layout::default()
+            .constraints([
+                Constraint::Percentage(33),
+                Constraint::Percentage(33),
+                Constraint::Percentage(34),
+            ]).split(frame.area());
+        
+        let inner_chunks = Layout::default()
+            .constraints([
+                Constraint::Percentage(33),
+                Constraint::Percentage(33),
+                Constraint::Percentage(34),
+            ]).split(outer_chunks[1]);
+        
+        let display = Paragraph::new(msg)
+            .block(Block::bordered().title("GAME OVER"));
+
+        frame.render_widget(display, inner_chunks[1]);
+
+    }
 }
 
 #[tokio::main]
@@ -1836,14 +1954,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 gossipsub_config,
             ).expect("poop2");
 
+
             MyBehaviour {
                 challenge: request_response::cbor::Behaviour::new(
                     [(StreamProtocol::new("/peerboard/challenge/1.0.0"), ProtocolSupport::Full)],
-                    request_response::Config::default()
+                    request_response::Config::default().with_request_timeout(Duration::from_secs(30))
                 ),
                 battleship: request_response::cbor::Behaviour::new(
                     [(StreamProtocol::new("/peerboard/battleship/1.0.0"), ProtocolSupport::Full)],
-                    request_response::Config::default(),
+                    request_response::Config::default().with_request_timeout(Duration::from_secs(30)),
                 ),
                 rendezvous: libp2p::rendezvous::client::Behaviour::new(key.clone()),
                 kademlia,

@@ -1,7 +1,5 @@
 		battleship
 BoardReady - BoardAck for BOTH peers
-add ship types to board
-	so i can tell when one has sunk
 resign midway through
 30 second timeout
 resign when i lose
