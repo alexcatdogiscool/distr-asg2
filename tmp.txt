@@ -1,2 +1,0 @@
-external addrs at register time: [/ip4/203.84.232.184/tcp/31408, /ip4/203.84.232.184/tcp/12345, /ip4/203.84.232.184/udp/12345/quic-v1, /ip4/192.168.0.191/udp/12345/quic-v1]
-external addrs: [/ip4/203.84.232.184/tcp/12345, /ip4/203.84.232.184/udp/12345/quic-v1, /ip4/192.168.0.191/udp/12345/quic-v1]

@@ -1857,9 +1857,25 @@ fn draw_battle(frame: &mut Frame, state: &mut AppState) {
         // stats!!
         // turn number, ships sunk
         
-        let sunk_stat: String = format!("{}/5", battle.ships_sunk);
+        let mut sunk_stat: String = format!("{}/5\n", battle.ships_sunk);
+        let turn: String = match battle.phase {
+            BattlePhase::MyTurn => "Your Turn".to_string(),
+            BattlePhase::WaitingForOpponent => "Opponents Turn".to_string(),
+            
+            _ => {
+                "how did you get here...".to_string()
+            }
+        };
+
+        sunk_stat.push_str(&turn);
+
+
         let stats = Paragraph::new(sunk_stat)
                 .block(Block::new().title(format!("STATS | Turn Number: {}", battle.shot_seq)));
+
+        
+
+        
 
 
 
