@@ -3,8 +3,9 @@
 
 # How to build
 
-cargo run -- --help gives:
+`cargo run -- --help` gives:
 
+```
 Usage: asg2 [OPTIONS] --sqldb <SQLDB>
 
 Options:
@@ -16,6 +17,7 @@ Options:
       --public-ip <PUBLIC_IP>  
       --nick <NICK>            
   -h, --help                   Print help
+```
 
 only a databade name is required and does not need to exist, it will be created in that case with the name given by you.
 --ident-key is the key for the persistant identity of a node.
