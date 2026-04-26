@@ -37,10 +37,10 @@ If not given in the CLI, one will be generated with name "ident-keypair.key"
 
 
 to build and run initailly just run:
-cargo run -- --sqldb msg_db
+cargo `run -- --sqldb msg_db`
 
 this will create the database and the keypair, for future runs, run:
-cargo run -- --sqldb msg_db --idenk-key ident-keypair.key
+`cargo run -- --sqldb msg_db --idenk-key ident-keypair.key`
 
 
 # Controls
@@ -49,13 +49,12 @@ cargo run -- --sqldb msg_db --idenk-key ident-keypair.key
 
 after running the app, you will be in the main messaging state.
 
-press the up and down arrow keys to chnage the cursor beteen the left and right b
-uffer.
+press the up and down arrow keys to chnage the cursor beteen the left and right buffer.
 You will automatically subscribe to "/general".
 
 pressing enter on the right will post a message.
 
-when in the right buffer, you can enter a new topic name like "rust".
+when in the left buffer, you can enter a new topic name like "rust".
 
 It will automatically prepend the "peerboard/...." under the hood, and you will be unsubscribed from the current topic.
 
@@ -90,7 +89,7 @@ Arrow keys navigate the cursor around the board.
 
 Pressing enter will select that cell, then, arrow keys define the direction of placement.
 
-If you want to change the cell, press backspace.
+If you want to change the cell, press backspace, you are then free to move the cursor again.
 
 If you are happing with the position and direction, press enter again and that peice will be consumed.
 
@@ -101,7 +100,7 @@ If you were the first to finish building your board, you will not be able to mov
 
 If it is your turn (as indicated on the right), move the cursor and press enter to fire.
 
-If you shot was a MISS, an "O" will be placed where you shot, if you hit, and "X" will be placed
+If you shot was a MISS, an "O" will be placed where you shot, if you hit, an "X" will be placed
 
 These same symbols will be placed on your board representing shots fired by your opponent.
 
