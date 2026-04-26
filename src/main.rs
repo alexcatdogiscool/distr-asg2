@@ -74,6 +74,9 @@ struct Cli {
     #[arg(long)]
     public_ip: Option<String>,
 
+    #[arg(long)]
+    nick: Option<String>,
+
 }
 
 #[derive(NetworkBehaviour)]
@@ -111,19 +114,15 @@ fn check_msg(msg: &PeerBoardMessage) -> bool {
         .as_secs() as i64;
 
     if (msg.content.as_bytes().len() > 4096) {
-        println!("1");
         return false;
     }
     if (!msg.topic.starts_with("peerboard/v1/")) {
-        println!("2");
         return false;
     }
     if (msg.timestamp - now > 300) {
-        println!("3");
         return false;
     }
     if (msg.nickname.as_bytes().len() > 32) {
-        println!("4");
         return false;
     }
     return true;
@@ -197,7 +196,8 @@ struct BuildState {
     is_placing: bool,
     placing_cursor: QuadDirection,
     board_ready: bool,
-    am_challenger: bool
+    am_challenger: bool,
+    opponent_ready: bool
 }
 
 impl BuildState {
@@ -260,7 +260,7 @@ impl Ship {
 
     fn next(&self) -> Ship {
         match self {
-            Ship::CARRIER => Ship::None,//Ship::BATTLESHIP,
+            Ship::CARRIER => Ship::BATTLESHIP,
             Ship::BATTLESHIP => Ship::CRUISER,
             Ship::CRUISER => Ship::SUBMARINE,
             Ship::SUBMARINE => Ship::DESTROYER,
@@ -332,7 +332,8 @@ struct SimplePeer {
 
 #[derive(PartialEq)]
 enum BattlePhase {
-    WaitingForBoardAck,
+    WaitingForBoardAck { opponent_ready: bool },
+    OpponentBoardReady { is_ready: bool },
     WaitingForOpponent,
     MyTurn,
     GameOver { i_won: bool },
@@ -354,6 +355,7 @@ struct AppState {
     my_peer_id: PeerId,
     udp_port: Option<u16>,
     tcp_port: Option<u16>,
+    nickname: String,
 
 }
 
@@ -467,7 +469,7 @@ async fn run_tui(
                                                 content: state.msg_buffer.clone(),
                                                 timestamp: now,
                                                 message_id: Uuid::new_v4().to_string(),
-                                                nickname: "alex".to_string(),
+                                                nickname: state.nickname.clone(),
                                             };
 
                                             // check the message for validity
@@ -526,17 +528,28 @@ async fn run_tui(
 
                                             }
                                             else {
+                                                // unsubscribe from previous topic
+                                                let old_topic_str = format!("{}", state.current_topic);
+                                                let old_topic = gossipsub::IdentTopic::new(old_topic_str.clone());
+                                                swarm.behaviour_mut().gossipsub.unsubscribe(&old_topic);
+
+                                                // subscribe to new topic
                                                 let topic_str = format!("peerboard/v1/{}", state.topic_buffer.clone());
                                                 let new_topic = gossipsub::IdentTopic::new(topic_str.clone());
                                                 swarm.behaviour_mut().gossipsub.subscribe(&new_topic)?;
                                                 if (!(state.recent_topics.contains(&topic_str))) {
                                                     state.recent_topics.push(topic_str.clone());
                                                 }
+
+
                                                 state.current_topic = topic_str.clone();
                                                 
 
                                                 // update the messages buffer too
                                                 state.messages = load_messages(conn, &state.current_topic);
+
+                                                
+
                                             }
                                             // so many evil nested if's >:(
                                             state.topic_buffer.clear();// clear buffer in all cases
@@ -584,47 +597,71 @@ async fn run_tui(
                             // battle
                             GameState::BATTLE(battle) => {
 
-                                match key.code {
-                                    KeyCode::Up => {
-                                        battle.cursor[1] = 0.max(battle.cursor[1] - 1);
+                                match battle.phase {
+
+                                    BattlePhase::OpponentBoardReady{is_ready: ready} => {
+                                        if ready {
+                                            battle.phase = if battle.my_turn {
+                                                BattlePhase::MyTurn
+                                            } else {
+                                                BattlePhase::WaitingForOpponent
+                                            }
+                                        }
+                                        // else, wait for them to be ready!
                                     }
-                                    KeyCode::Down => {
-                                        battle.cursor[1] = 9.min(battle.cursor[1] + 1);
-                                    }
-                                    KeyCode::Left => {
-                                        battle.cursor[0] = 0.max(battle.cursor[0] - 1);
-                                    }
-                                    KeyCode::Right => {
-                                        battle.cursor[0] = 9.min(battle.cursor[0] + 1);
+                                    BattlePhase::WaitingForBoardAck{ opponent_ready: ready } => {}
+                                    BattlePhase::GameOver{ i_won: won } => {
+                                        todo!();
                                     }
 
-                                    
-                                    KeyCode::Enter => {
-                                        if battle.phase == BattlePhase::MyTurn && battle.my_shots[battle.cursor[1] as usize][battle.cursor[0] as usize] == HitState::None {//fire a shot
-                                            battle.pening_shot = Some([battle.cursor[1] as usize, battle.cursor[0] as usize]);
-                                            //battle.my_shots[battle.cursor[1] as usize][battle.cursor[0] as usize] = true;
-                                            battle.phase = BattlePhase::WaitingForOpponent;
+                                    BattlePhase::MyTurn | BattlePhase::WaitingForOpponent => {
+                                        match key.code {// play the game
+                                            KeyCode::Up => {
+                                                battle.cursor[1] = 0.max(battle.cursor[1] - 1);
+                                            }
+                                            KeyCode::Down => {
+                                                battle.cursor[1] = 9.min(battle.cursor[1] + 1);
+                                            }
+                                            KeyCode::Left => {
+                                                battle.cursor[0] = 0.max(battle.cursor[0] - 1);
+                                            }
+                                            KeyCode::Right => {
+                                                battle.cursor[0] = 9.min(battle.cursor[0] + 1);
+                                            }
 
-                                            // send the req and wait for response
-                                            let request = BattleshipRequest{ msg: Some(battleship_request::Msg::Shot(Shot {
-                                                seq: battle.shot_seq,
-                                                col: battle.cursor[0] as u32,
-                                                row: battle.cursor[1] as u32
-                                            })) };
-                                            let mut buf = vec![];
-                                            request.encode(&mut buf);
-                                            swarm.behaviour_mut().battleship.send_request(&battle.opponent_peer_id, buf);
+                                            
+                                            KeyCode::Enter => {
+                                                if battle.phase == BattlePhase::MyTurn && battle.my_shots[battle.cursor[1] as usize][battle.cursor[0] as usize] == HitState::None {//fire a shot
+                                                    battle.pening_shot = Some([battle.cursor[1] as usize, battle.cursor[0] as usize]);
+                                                    //battle.my_shots[battle.cursor[1] as usize][battle.cursor[0] as usize] = true;
+                                                    battle.phase = BattlePhase::WaitingForOpponent;
 
-                                        }// ese do nothing
+                                                    // send the req and wait for response
+                                                    let request = BattleshipRequest{ msg: Some(battleship_request::Msg::Shot(Shot {
+                                                        seq: battle.shot_seq,
+                                                        col: battle.cursor[0] as u32,
+                                                        row: battle.cursor[1] as u32
+                                                    })) };
+                                                    let mut buf = vec![];
+                                                    request.encode(&mut buf);
+                                                    swarm.behaviour_mut().battleship.send_request(&battle.opponent_peer_id, buf);
+
+                                                }// ese do nothing
+                                            }
+
+                                            KeyCode::Esc => {
+                                                safe_exit(swarm, state);
+                                                break;
+                                            }
+
+                                            _ => {}
+                                        }
                                     }
 
-                                    KeyCode::Esc => {
-                                        safe_exit(swarm, state);
-                                        break;
-                                    }
-
-                                    _ => {}
+                                    _ => {},
                                 }
+
+                                
                             }
 
                             GameState::RENDEZVOUS(rend) => {
@@ -658,7 +695,7 @@ async fn run_tui(
                                             // send a battle request to the selected peer
                                             let peer_id = rend.seeking_peers[rend.selected.unwrap()];
 
-                                            let propose = ChallengePropose{ nickname: "alex".to_string() };
+                                            let propose = ChallengePropose{ nickname: state.nickname.clone() };
                                             let mut buf = vec![];
                                             propose.encode(&mut buf).unwrap();
                                             swarm.behaviour_mut().challenge.send_request(&peer_id, buf);
@@ -688,6 +725,12 @@ async fn run_tui(
                                                 let mut buf = vec![];
                                                 respone.encode(&mut buf).unwrap();
                                                 swarm.behaviour_mut().challenge.send_response(acpt.channel.take().unwrap(), buf).unwrap();// ewwww .take()...
+
+                                                // unregister
+                                                swarm.behaviour_mut().rendezvous.unregister(
+                                                    libp2p::rendezvous::Namespace::new("peerboard/challenge/seeking".to_string()).unwrap(),
+                                                    BOOTSTRAP_PEER_ID.parse().unwrap(),
+                                                );
                                                 
                                                 state.game_state = GameState::BUILD(BuildState {
                                                     opponent_peer_id: acpt.peer.as_ref().unwrap().peer_id,
@@ -699,6 +742,7 @@ async fn run_tui(
                                                     placing_cursor: QuadDirection::UP,
                                                     board_ready: false,
                                                     am_challenger: false,// i am accepting, i am not the challenger
+                                                    opponent_ready: false,
                                                 });
                                             }
                                             false => {
@@ -775,7 +819,6 @@ async fn run_tui(
                                                 // if so, go to the next state
                                                 if build.current_ship == Ship::None {
                                                     // set board_done to true
-                                                    // when we recevie a BoardReady, send BoardAck
                                                     build.board_ready = true;
                                                 }
                                                 
@@ -799,29 +842,12 @@ async fn run_tui(
                                 }
 
                                 if build.board_ready {
-                                    if build.am_challenger {
-                                        // request BoardReady
-                                        let request = BattleshipRequest { msg: Some(battleship_request::Msg::BoardReady(BoardReady {})) };// ???
-                                        let mut buf = vec![];
-                                        request.encode(&mut buf)?;
-                                        swarm.behaviour_mut().battleship.send_request(&build.opponent_peer_id, buf);
+                                    // request BoardReady
+                                    let request = BattleshipRequest { msg: Some(battleship_request::Msg::BoardReady(BoardReady {})) };// ???
+                                    let mut buf = vec![];
+                                    request.encode(&mut buf)?;
+                                    swarm.behaviour_mut().battleship.send_request(&build.opponent_peer_id, buf);
 
-                                        // move into battle state
-                                        state.game_state = GameState::BATTLE(BattleState {
-                                            opponent_peer_id: build.opponent_peer_id,
-                                            opponent_nickname: build.opponent_nickname.clone(),
-                                            my_board: build.my_board.clone(),
-                                            my_shots: [[HitState::None;10];10],
-                                            their_shots: [[HitState::None;10];10],
-                                            my_turn: true,
-                                            shot_seq: 0,
-                                            phase: BattlePhase::MyTurn,
-                                            cursor: build.cursor,
-                                            am_challenger: true,
-                                            pening_shot: None,
-                                            ships_sunk: 0,
-                                        });
-                                    }// else wait for BoardReady request
                                 }
 
                                 
@@ -939,7 +965,7 @@ async fn run_tui(
                         // in message state. ignore this
                     },
 
-                    // someone trying to talk to me
+                    // incoming response
                     SwarmEvent::Behaviour(MyBehaviourEvent::Challenge(
                         request_response::Event::Message {
                             peer,
@@ -962,6 +988,7 @@ async fn run_tui(
                                     placing_cursor: QuadDirection::UP,
                                     board_ready: false,
                                     am_challenger: true,// i challenged them
+                                    opponent_ready: false
                                 });
                             }
                         }// else, do nothing
@@ -991,9 +1018,6 @@ async fn run_tui(
 
                         // game logic stuff
                     // incoming request
-
-                    
-
                     SwarmEvent::Behaviour(MyBehaviourEvent::Battleship(
                         request_response::Event::Message {
                             peer,
@@ -1004,33 +1028,29 @@ async fn run_tui(
                         let msg = BattleshipRequest::decode(request.as_slice()).unwrap();
 
                         match msg {
-                            // challengers board is ready
                             BattleshipRequest {msg: Some(msg)} => {
                                 match msg {
-                                    // board setup
                                     BattleShip::battleship_request::Msg::BoardReady(BoardReady) => {
-                                        if let GameState::BUILD(build) = &mut state.game_state {
-                                            if build.board_ready {// send BoardAck
-                                                let response = BattleshipResponse { msg: Some(battleship_response::Msg::BoardAck(BoardAck {  })) };
-                                                let mut buf = vec![];
-                                                response.encode(&mut buf)?;
-                                                swarm.behaviour_mut().battleship.send_response(channel, buf);
+                                        // opponent told me "my board is ready"
+                                        // send borad ack always
+                                        let response = BattleshipResponse { msg: Some(battleship_response::Msg::BoardAck(BoardAck {  })) };
+                                        let mut buf = vec![];
+                                        response.encode(&mut buf)?;
+                                        swarm.behaviour_mut().battleship.send_response(channel, buf);
 
-                                                // change state to battle
-                                                state.game_state = GameState::BATTLE(BattleState {
-                                                    opponent_peer_id: build.opponent_peer_id,
-                                                    opponent_nickname: build.opponent_nickname.clone(),
-                                                    my_board: build.my_board,
-                                                    my_shots: [[HitState::None;10];10],
-                                                    their_shots: [[HitState::None;10];10],
-                                                    my_turn: false,
-                                                    shot_seq: 0,
-                                                    phase: BattlePhase::WaitingForOpponent,
-                                                    cursor: build.cursor,
-                                                    am_challenger: false,
-                                                    pening_shot: None,
-                                                    ships_sunk: 0,
-                                                })
+                                        if let GameState::BUILD(build) = &mut state.game_state {
+                                            // flag them as ready
+                                            build.opponent_ready = true;
+
+                                            
+                                            
+                                        }
+                                        else if let GameState::BATTLE(battle) = &mut state.game_state {
+                                            //battle.phase = BattlePhase::OpponentBoardReady { is_ready: true }
+                                            battle.phase = if battle.am_challenger {
+                                                BattlePhase::MyTurn
+                                            } else {
+                                                BattlePhase::WaitingForOpponent
                                             }
                                         }
                                     }
@@ -1038,65 +1058,82 @@ async fn run_tui(
                                     // recv a shot
                                     BattleShip::battleship_request::Msg::Shot(shot) => {
                                         if let GameState::BATTLE(battle) = &mut state.game_state {
-                                            battle.phase = BattlePhase::MyTurn;
-                                            battle.shot_seq = shot.seq + 1;
-                                            
-                                            battle.their_shots[shot.row as usize][shot.col as usize] = HitState::Miss;
-                                            // checkif the shot was a hit
-                                            if battle.my_board.board[shot.row as usize][shot.col as usize] != Ship::None {
+
+                                            // check if shot is valid
+                                            let valid_shot = !(shot.row > 9 || shot.row < 0 || shot.col > 9 || shot.col < 0);
+
+                                            if valid_shot {
+                                                battle.phase = BattlePhase::MyTurn;
+                                                battle.shot_seq = shot.seq + 1;
                                                 
-                                                // it hit
-                                                battle.their_shots[shot.row as usize][shot.col as usize] = HitState::Hit;
+                                                battle.their_shots[shot.row as usize][shot.col as usize] = HitState::Miss;
+                                                // checkif the shot was a hit
+                                                if battle.my_board.board[shot.row as usize][shot.col as usize] != Ship::None {
+                                                    
+                                                    // it hit
+                                                    battle.their_shots[shot.row as usize][shot.col as usize] = HitState::Hit;
 
-                                                // what did they hit?
-                                                let shipType = battle.my_board.board[shot.row as usize][shot.col as usize].clone();
-                                                // set this cell to false so it cant be hit again
-                                                battle.my_board.board[shot.row as usize][shot.col as usize] = Ship::None;
+                                                    // what did they hit?
+                                                    let shipType = battle.my_board.board[shot.row as usize][shot.col as usize].clone();
+                                                    // set this cell to false so it cant be hit again
+                                                    battle.my_board.board[shot.row as usize][shot.col as usize] = Ship::None;
 
-                                                // did i just lose?
-                                                let mut am_alive: bool = false;
-                                                for r in battle.my_board.board.iter() {
-                                                    for c in r.iter() {
-                                                        if *c != Ship::None {
-                                                            am_alive = true;
+                                                    // did i just lose?
+                                                    let mut am_alive: bool = false;
+                                                    for r in battle.my_board.board.iter() {
+                                                        for c in r.iter() {
+                                                            if *c != Ship::None {
+                                                                am_alive = true;
+                                                                break;
+                                                            }
+                                                        }
+                                                        if am_alive {
                                                             break;
                                                         }
                                                     }
-                                                    if am_alive {
-                                                        break;
-                                                    }
-                                                }
 
-                                                // was this ship sunk?
-                                                let sunk = was_ship_sunk(battle.my_board.board, shipType);
-                                                    // send them back the sunk msg
-                                                
+                                                    // was this ship sunk?
+                                                    let sunk = was_ship_sunk(battle.my_board.board, shipType);
+                                                        // send them back the sunk msg
+                                                    
 
-                                                // send hit response
-                                                let response = BattleshipResponse {msg: Some(battleship_response::Msg::ShotResult(ShotResult{
-                                                    seq: battle.shot_seq,
-                                                    hit: true,
-                                                    sunk: sunk,
-                                                    won: !am_alive,
-                                                }))};
-                                                let mut buf = vec![];
-                                                response.encode(&mut buf);
-                                                swarm.behaviour_mut().battleship.send_response(channel, buf);
-
-                                                // if i lost
-                                                // send resign and stuff
-                                                if !am_alive {
-                                                    let mesg = BattleshipRequest {msg: Some(battleship_request::Msg::Resign(Resign{}))};
+                                                    // send hit response
+                                                    let response = BattleshipResponse {msg: Some(battleship_response::Msg::ShotResult(ShotResult{
+                                                        seq: battle.shot_seq,
+                                                        hit: true,
+                                                        sunk: sunk,
+                                                        won: !am_alive,
+                                                    }))};
                                                     let mut buf = vec![];
-                                                    mesg.encode(&mut buf);
-                                                    swarm.behaviour_mut().battleship.send_request(&battle.opponent_peer_id, buf);
+                                                    response.encode(&mut buf);
+                                                    swarm.behaviour_mut().battleship.send_response(channel, buf);
+
+                                                    // if i lost
+                                                    // send resign and stuff
+                                                    if !am_alive {
+                                                        let mesg = BattleshipRequest {msg: Some(battleship_request::Msg::Resign(Resign{}))};
+                                                        let mut buf = vec![];
+                                                        mesg.encode(&mut buf);
+                                                        swarm.behaviour_mut().battleship.send_request(&battle.opponent_peer_id, buf);
+                                                    }
+                                                    
+                                                    
+
+
+                                                } else {
+                                                    // send hit response
+                                                    let response = BattleshipResponse {msg: Some(battleship_response::Msg::ShotResult(ShotResult{
+                                                        seq: battle.shot_seq,
+                                                        hit: false,
+                                                        sunk: false,
+                                                        won: false
+                                                    }))};
+                                                    let mut buf = vec![];
+                                                    response.encode(&mut buf);
+                                                    swarm.behaviour_mut().battleship.send_response(channel, buf);
+
                                                 }
-                                                
-                                                
-
-
-                                            } else {
-                                                // send hit response
+                                            } else {// shot was invalid
                                                 let response = BattleshipResponse {msg: Some(battleship_response::Msg::ShotResult(ShotResult{
                                                     seq: battle.shot_seq,
                                                     hit: false,
@@ -1107,6 +1144,12 @@ async fn run_tui(
                                                 response.encode(&mut buf);
                                                 swarm.behaviour_mut().battleship.send_response(channel, buf);
 
+                                                // resign
+
+                                                let req = BattleshipRequest {msg: Some(battleship_request::Msg::Resign(Resign{}))};
+                                                let mut buf = vec![];
+                                                req.encode(&mut buf);
+                                                swarm.behaviour_mut().battleship.send_request(&battle.opponent_peer_id, buf);
                                             }
                                         }
                                     }
@@ -1152,17 +1195,18 @@ async fn run_tui(
                             let mut buf = vec![];
                             response.encode(&mut buf)?;
                             swarm.behaviour_mut().battleship.send_request(&battle.opponent_peer_id, buf);
-                        }
-                        // end the game (resigned)
-                        state.game_state = GameState::FINISHED(FinishedState {
-                            result: GameResult::WON,
-                            time: std::time::Instant::now(),
-                        });
+                            // end the game (resigned)
+                            state.game_state = GameState::FINISHED(FinishedState {
+                                result: GameResult::RESIGN,
+                                time: std::time::Instant::now(),
+                            });
+                            }
+                        
 
                         
                     }
 
-                    // icoming response
+                    // incoming response
                     SwarmEvent::Behaviour(MyBehaviourEvent::Battleship(
                         request_response::Event::Message {
                             peer,
@@ -1172,8 +1216,9 @@ async fn run_tui(
                             ..
                         }
                     )) => {
+                        let msg = BattleshipResponse::decode(response.as_slice()).unwrap();
+
                         if let GameState::BATTLE(battle) = &mut state.game_state {
-                            let msg = BattleshipResponse::decode(response.as_slice()).unwrap();
                             match msg {
                                 BattleshipResponse { msg: Some(req) } => {
                                     match req {
@@ -1196,10 +1241,18 @@ async fn run_tui(
                                                 if won {
                                                     // i just won
                                                     battle.phase = BattlePhase::GameOver { i_won: true };
+                                                    // send a resign
+                                                    let mesg = BattleshipRequest {msg: Some(battleship_request::Msg::Resign(Resign{}))};
+                                                    let mut buf = vec![];
+                                                    mesg.encode(&mut buf);
+                                                    swarm.behaviour_mut().battleship.send_request(&battle.opponent_peer_id, buf);
+
+                                                } else if !won {
+                                                    battle.phase = BattlePhase::WaitingForOpponent;
                                                 }
                                             }
                                             battle.shot_seq = seq;
-                                            battle.phase = BattlePhase::WaitingForOpponent;
+                                            
                                         }
 
                                         // recived resignAck
@@ -1213,6 +1266,53 @@ async fn run_tui(
                                         _ => {}
                                     }
                                 }
+                                _ => {}
+                            }
+                        }
+                        if let GameState::BUILD(build) = &mut state.game_state {
+                            match msg {
+                                BattleshipResponse { msg: Some(req) } => {
+                                    match req {
+                                        BattleShip::battleship_response::Msg::BoardAck(_) => {
+                                            // in build state and ooponent acknowlaged out buildReady.
+                                            // move to battle state and wait for oppoenent
+
+                                            let phase: BattlePhase = if build.opponent_ready {
+                                                if build.am_challenger {
+                                                    BattlePhase::MyTurn
+                                                } else {
+                                                    BattlePhase::WaitingForOpponent
+                                                }
+                                            } else {
+                                                BattlePhase::OpponentBoardReady { is_ready: false }
+                                            };
+                                            state.game_state = GameState::BATTLE(BattleState {
+                                                opponent_peer_id: build.opponent_peer_id,
+                                                opponent_nickname: build.opponent_nickname.clone(),
+                                                my_board: build.my_board.clone(),
+                                                my_shots: [[HitState::None;10];10],
+                                                their_shots: [[HitState::None;10];10],
+                                                my_turn: build.am_challenger,
+                                                shot_seq: 1,
+                                                phase: phase,
+                                                cursor: build.cursor,
+                                                am_challenger: build.am_challenger,
+                                                pening_shot: None,
+                                                ships_sunk: 0,
+                                            });
+
+
+                                        }
+
+                                        _ => {}
+                                    }
+                                    
+                                }
+
+                                
+
+                                
+
                                 _ => {}
                             }
                         }
@@ -2082,7 +2182,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         swarm.behaviour_mut().kademlia.add_address(&peer_id, peer.clone());
         swarm.dial(peer)?;
-        swarm.behaviour_mut().kademlia.bootstrap()?;
+        //swarm.behaviour_mut().kademlia.bootstrap()?;
         println!("dialed given peer");
     }
 
@@ -2117,7 +2217,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             self_lookup_done: false,
             my_peer_id: local_peer_id,
             udp_port: udp_port,
-            tcp_port: tcp_port
+            tcp_port: tcp_port,
+            nickname: cli.nick.unwrap_or("Anonymous".to_string())
         };
 
         enable_raw_mode()?;
@@ -2132,134 +2233,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         result
     } else {
 
-        let mut other_peer_id: Option<PeerId> = None;
-
-        let mut stdin: io::Lines<BufReader<io::Stdin>> = io::BufReader::new(io::stdin()).lines();
-
-        loop {
-            select! {
-
-                // simple msg match
-                Ok(Some(line)) = stdin.next_line() => {
-                    // construct a message based on the input
-
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs() as i64;
-
-                    let msg = PeerBoardMessage {
-                        peer_id: local_peer_id.to_string(),
-                        topic: topic_string.clone(),
-                        content: line,
-                        timestamp: now,
-                        message_id: Uuid::new_v4().to_string(),
-                        nickname: "alex".to_string(),
-                    };
-
-                    // check the message for validity
-                    if (check_msg(&msg)) {
-                        let mut buf = Vec::new();
-                        msg.encode(&mut buf).unwrap();
-                        swarm.behaviour_mut().gossipsub.publish(topic.clone(), buf)?;
-                        // add it to the db
-                        conn.execute(
-                            "INSERT INTO msgs (peer_id, topic, content, timestamp, message_id, nickname)
-                            VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                        (msg.peer_id, msg.topic, msg.content, msg.timestamp, msg.message_id, msg.nickname),
-                        ).expect("couldnt add msg to the db");
-                    }
-                    else {
-                        println!("bad message. didnt publish");
-                    }
-
-                    
-                }
-
-                
-
-                // swam match
-                event = swarm.select_next_some() => match event {
-
-                    SwarmEvent::Dialing { peer_id, connection_id } => {
-                        println!("Dialing {peer_id:?}");
-                    }
-
-                    SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                        println!("FAILED to dial {peer_id:?}: {error}");
-                    }
-
-                    // listening on ...
-                    SwarmEvent::NewListenAddr { address, .. } => {
-                        println!("Listening on addr: {address}");
-                    }
-                    // new connection made ...
-                    SwarmEvent::ConnectionEstablished { peer_id, .. } => {
-                        other_peer_id = Some(peer_id);
-                        println!("connection established with: {}", other_peer_id.unwrap().to_string());
-                    }
-                    // some kademlia stuff
-                    SwarmEvent::Behaviour(MyBehaviourEvent::Kademlia(e)) => {
-                        println!("kademlia event {e:?}");
-                    }
-                    // gossipsub listen
-                    SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
-                        message,
-                        ..
-                        })) => {
-                            match PeerBoardMessage::decode(message.data.as_slice()) {
-                                Ok(msg) => {
-                                    // check the message for validity
-                                    if (check_msg(&msg)) {
-                                        // chgeck if it exists within the db v
-
-                                        let msg_exists: bool = conn
-                                            .query_row(
-                                                "SELECT COUNT(*) FROM msgs WHERE message_id = ?1",
-                                                [&msg.message_id],
-                                                |row| row.get::<_, i64>(0),
-                                            )
-                                            .unwrap_or(0) > 0;
-
-                                        if msg_exists {
-                                            //duplicate message
-                                            println!("duplicate message recieved");
-                                        }
-                                        else {
-                                            // valid good non duplicate message
-                                            println!("[{}] {}: {}", msg.topic, msg.nickname, msg.content);
-                                            // add it to the db
-                                            conn.execute(
-                                                "INSERT INTO msgs (peer_id, topic, content, timestamp, message_id, nickname)
-                                                VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                                            (msg.peer_id, msg.topic, msg.content, msg.timestamp, msg.message_id, msg.nickname),
-                                            ).expect("couldnt add msg to the db");
-                                        }
-
-                                        
-                                        
-
-                                    }
-                                    else {
-                                        println!("received a malformed message");
-                                    }
-                                    
-                                },
-                                Err(e) => println!("failed to decode msg: {e}"),
-                            }
-                        }
-
-                    _ => println!("unhandled: {:?}", event),
-                }
-
-                
-                
-            }
-        }
 
         Ok(())
 
     }
+    
 
     
 }
